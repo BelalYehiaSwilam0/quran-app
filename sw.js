@@ -3,7 +3,7 @@
    ⚠️ مهم: كل مرة تعمل تحديث، غيّر رقم CACHE_VERSION هنا
    ═══════════════════════════════════════════════════════════════════════ */
 
-const CACHE_VERSION = 'v1.0.1';
+const CACHE_VERSION = 'v1.0.2';
 const CACHE_NAME = `quran-cache-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -24,6 +24,7 @@ self.addEventListener('install', (event) => {
         caches.open(CACHE_NAME)
             .then((cache) => cache.addAll(APP_SHELL))
             .catch((err) => console.warn('[SW] pre-cache failed:', err))
+            .then(() => self.skipWaiting())  // ⭐ الجديد: يتفعّل فورًا
     );
 });
 
