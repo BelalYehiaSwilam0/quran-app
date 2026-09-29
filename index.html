@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0d13" />
+<meta name="color-scheme" content="dark" />
+<title>القرآن الكريم</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Amiri+Quran&display=swap" rel="stylesheet">
+<!-- PWA -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="القرآن الكريم">
+<meta name="application-name" content="القرآن الكريم">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z"/></svg></div>
+        <div class="brand-text"><h1>القرآن الكريم</h1><p id="brandReciterName">جاري التحميل...</p></div>
+      </div>
+      <div class="search">
+        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+        <input type="text" id="searchInput" placeholder="ابحث باسم السورة أو رقمها..." autocomplete="off" spellcheck="false" inputmode="search"/>
+      </div>
+      <div class="top-actions">
+        <div class="reciter-wrap">
+          <button class="reciter-btn" id="reciterBtn" title="اختر القارئ" aria-label="اختر القارئ">
+            <svg class="mic" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+            <span class="r-name" id="reciterNameLabel">جاري التحميل...</span>
+            <svg class="r-caret" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+          <div class="reciter-dropdown" id="reciterDropdown" role="menu">
+            <div class="reciter-search"><svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg><input type="text" id="reciterSearchInput" placeholder="ابحث عن قارئ..." autocomplete="off" spellcheck="false"/></div>
+            <div class="reciter-list" id="reciterList"></div>
+          </div>
+        </div>
+        <button class="icon-btn" id="storageBtn" title="البيانات المحمّلة" aria-label="البيانات المحمّلة"><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg><span class="badge green" id="storageBadge">0</span></button>
+        <button class="icon-btn" id="downloadBtn" title="تحميل السور" aria-label="تحميل السور"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
+        <button class="icon-btn" id="themeBtn" title="تبديل المظهر" aria-label="تبديل المظهر"><svg viewBox="0 0 24 24" id="themeIcon"></svg></button>
+        <button class="icon-btn" id="cacheBtn" title="حالة التوقيتات" aria-label="حالة التوقيتات"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg><span class="cache-chip" id="cacheChip">0%</span></button>
+        <button class="icon-btn" id="sleepBtn" title="مؤقت النوم" aria-label="مؤقت النوم"><svg viewBox="0 0 24 24"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4a9 9 0 0 0-9 9 9 9 0 0 0 18 0c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg><span class="timer-chip" id="timerChip">0:00</span></button>
+        <button class="icon-btn" id="queueBtn" title="قائمة التشغيل" aria-label="قائمة التشغيل"><svg viewBox="0 0 24 24"><path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h12v2H3v-2zm14 0v-3h2v3h3v2h-3v3h-2v-3h-3v-2h3z"/></svg><span class="badge" id="queueBadge">0</span></button>
+        <button class="icon-btn mobile-menu-btn" id="mobileMenuBtn" title="القائمة" aria-label="القائمة">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="mobile-overlay" id="mobileOverlay"></div>
+  <aside class="mobile-sidebar" id="mobileSidebar" aria-hidden="true">
+    <div class="mobile-sidebar-head">
+      <div class="mobile-sidebar-title">
+        <svg viewBox="0 0 24 24"><path d="M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z" fill="currentColor"/></svg>
+        <span>القائمة</span>
+      </div>
+      <button class="mobile-sidebar-close" id="mobileSidebarClose" aria-label="إغلاق">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor"/></svg>
+      </button>
+    </div>
+    <div class="mobile-sidebar-list">
+      <button class="ms-item" data-trigger="reciterBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z" fill="currentColor"/></svg>
+        <span class="ms-label">القارئ</span>
+        <span class="ms-value" id="msReciterName">—</span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ms-item" data-trigger="queueBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24"><path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h12v2H3v-2z" fill="currentColor"/></svg>
+        <span class="ms-label">قائمة التشغيل</span>
+        <span class="ms-value" id="msQueueCount">0</span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ms-item" data-trigger="storageBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" fill="currentColor"/></svg>
+        <span class="ms-label">البيانات المحمّلة</span>
+        <span class="ms-value" id="msStorageCount">0</span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ms-item" data-trigger="downloadBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" fill="currentColor"/></svg>
+        <span class="ms-label">تحميل السور</span>
+        <span class="ms-value"></span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ms-item" data-trigger="cacheBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" fill="currentColor"/></svg>
+        <span class="ms-label">حالة التوقيتات</span>
+        <span class="ms-value" id="msCachePct">0%</span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ms-item" data-trigger="sleepBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4a9 9 0 0 0-9 9 9 9 0 0 0 18 0c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z" fill="currentColor"/></svg>
+        <span class="ms-label">مؤقت النوم</span>
+        <span class="ms-value" id="msSleepValue">—</span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="ms-item" data-trigger="themeBtn">
+        <svg class="ms-icon" viewBox="0 0 24 24" id="msThemeIcon"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5c0-.34.02-.68.06-1A9 9 0 1 0 21.5 14.44c-.32.04-.66.06-1 .06z" fill="currentColor"/></svg>
+        <span class="ms-label">تبديل المظهر</span>
+        <span class="ms-value" id="msThemeValue">ليلي</span>
+        <svg class="ms-arrow" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <div class="wrap hero">
+    <div class="hero-stats">
+      <div class="stat"><b>114</b><span>سورة</span></div>
+      <div class="stat-divider"></div>
+      <div class="stat"><b id="statQueue">0</b><span>في القائمة</span></div>
+      <div class="stat-divider"></div>
+      <div class="stat"><b id="statDownloads">0</b><span>محمّلة</span></div>
+      <div class="stat-divider"></div>
+      <div class="stat"><b id="statLast">—</b><span>آخر تشغيل</span></div>
+    </div>
+  </div>
+  <main class="wrap">
+    <div class="subtitle-strip" id="subtitleStrip" aria-live="polite">
+      <div class="subtitle-card">
+        <div class="sub-head">
+          <span class="sub-badge"><svg viewBox="0 0 24 24"><path d="M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z"/></svg>تلاوة حية</span>
+          <span class="sub-head-title">سورة <b id="subSurahName">—</b></span>
+          <span class="sub-badge"><svg viewBox="0 0 24 24"><path d="M3 5h18v2H3V5zm0 6h12v2H3v-2zm0 6h18v2H3v-2z"/></svg><span id="subAyahNum">— / —</span></span>
+          <span class="sub-head-spacer"></span>
+          <span class="sub-live"><span class="sub-live-dot"></span>مباشر</span>
+        </div>
+        <div class="sub-ayah-wrap"><div class="sub-text" id="subAyahText">﴿ بسم الله الرحمن الرحيم ﴾</div></div>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </main>
+</div>
+
+<footer class="player" id="playerBar">
+  <div class="range-panel" id="rangePanel" aria-hidden="true">
+    <div class="rp-inner">
+      <div class="rp-head"><h4><svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></svg>نطاق التلاوة<small id="rpSurahName"></small></h4><button class="rp-close" id="rpClose" aria-label="إغلاق"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button></div>
+      <div class="phase-notice" id="phaseNotice"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span id="phaseNoticeText"></span></div>
+      <div class="cache-status" id="cacheStatus">
+        <svg viewBox="0 0 24 24" id="cacheStatusIcon"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        <div class="cs-body">
+          <div class="cs-text" id="cacheStatusText">جاري التحقق...</div>
+          <div class="cs-bars" id="cacheBars">
+            <div class="cs-bar-row"><span class="cs-bar-label">التوقيتات</span><div class="cs-bar"><i id="csTimingBar"></i></div><span class="cs-bar-pct" id="csTimingPct">0%</span></div>
+            <div class="cs-bar-row"><span class="cs-bar-label">النصوص</span><div class="cs-bar"><i id="csTextBar"></i></div><span class="cs-bar-pct" id="csTextPct">0%</span></div>
+            <div class="cs-bar-row overall"><span class="cs-bar-label">الإجمالي</span><div class="cs-bar"><i id="csOverallBar"></i></div><span class="cs-bar-pct" id="csOverallPct">0%</span></div>
+            <div class="cs-current" id="csCurrent">—</div>
+          </div>
+        </div>
+        <div class="cs-actions">
+          <button class="cs-btn" id="cachePreloadBtn" style="display:none">📥 تحميل الكل (كل القراء)</button>
+          <button class="cs-btn cancel" id="cacheCancelBtn" style="display:none">✕ إلغاء</button>
+        </div>
+      </div>
+      <div class="rp-grid">
+        <div class="rp-field" id="rpStartField"><label><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>من آية <span class="ctx-surah" id="rpStartContext" style="display:none"></span></label><select id="rpStartSelect"></select></div>
+        <div class="rp-field"><label><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>طريقة الإنهاء</label><div class="rp-mode-toggle" id="rpModeToggle"><button type="button" data-mode="ayah" class="active">عند آية</button><button type="button" data-mode="duration">بعد مدة</button></div></div>
+        <div class="rp-field rp-field-full" id="rpEndAyahField"><label><svg viewBox="0 0 24 24"><path d="M5 3h14v2H5zm0 16h14v2H5zm2-8h10v2H7z"/></svg>إلى آية <span class="optional-hint">(اتركه فارغًا للاستمرار حتى الإيقاف)</span><span id="rpEndCrossHint" style="color:var(--gold-2);font-weight:400;font-size:.7rem;margin-inline-start:6px"></span></label><div class="rp-end-row" id="rpEndRow"><select id="rpEndSurahSelect"></select><select id="rpEndSelect"></select></div></div>
+        <div class="rp-field rp-field-full" id="rpDurationField" style="display:none"><label><svg viewBox="0 0 24 24"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4a9 9 0 0 0-9 9 9 9 0 0 0 18 0c0-2.12-.74-4.07-1.97-5.61z"/></svg>المدة</label><div class="rp-dur-row"><div class="rp-dur-cell" id="rpDurHoursCell"><input type="number" id="rpDurHours" min="0" max="12" placeholder="ساعات"/><span class="rp-dur-hint">0-12</span></div><div class="rp-dur-cell" id="rpDurMinutesCell"><input type="number" id="rpDurMinutes" min="0" max="59" placeholder="دقائق"/><span class="rp-dur-hint">0-59</span></div></div></div>
+        <div class="rp-field rp-field-full" id="rpRepeatField"><label><svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>عدد مرات التشغيل <span style="color:var(--text-3);font-weight:400;font-size:.7rem;margin-inline-start:4px">(1 = مرة واحدة)</span></label><div class="rp-repeat-row" id="rpRepeatRow"><input type="number" id="rpRepeatCount" min="1" max="100" value="1" inputmode="numeric" aria-label="عدد مرات التشغيل"/><button type="button" class="rp-repeat-preset active" data-count="1">1×</button><button type="button" class="rp-repeat-preset" data-count="2">2×</button><button type="button" class="rp-repeat-preset" data-count="3">3×</button><button type="button" class="rp-repeat-preset" data-count="7">7×</button><button type="button" class="rp-repeat-preset" data-count="40">40×</button></div></div>
+        <div class="rp-btns rp-field-full"><button class="rp-btn danger" id="rpClear"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>مسح</button><button class="rp-btn primary" id="rpApply"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>تطبيق</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="player-inner">
+    <div class="now"><div class="now-art" id="nowArt" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z"/></svg></div><div class="now-meta"><b id="nowTitle">لم يتم التشغيل</b><span id="nowSub">اختر سورة من المكتبة للبدء</span></div></div>
+    <div class="controls">
+      <div class="ctrl-row">
+        <button class="btn-ctrl" id="shuffleBtn" title="خلط" aria-label="خلط"><svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button>
+        <button class="btn-ctrl" id="prevBtn" title="السابق" aria-label="السابق"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
+        <button class="btn-play" id="playBtn" disabled><svg viewBox="0 0 24 24" id="playIcon"><path d="M8 5v14l11-7z"/></svg></button>
+        <button class="btn-ctrl" id="nextBtn" title="التالي" aria-label="التالي"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+        <button class="btn-ctrl" id="repeatBtn" title="تكرار السورة" aria-label="تكرار السورة"><svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></button>
+      </div>
+      <div class="seek-row">
+        <span class="time" id="timeCur">0:00</span>
+        <div class="seek" id="seek" dir="ltr" role="slider" tabindex="0" aria-label="شريط التقدم" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="seek-track">
+            <div class="seek-buffer" id="seekBuffer"></div>
+            <div class="seek-range-fill" id="seekRangeFill"></div>
+            <div class="seek-fill" id="seekFill"></div>
+            <div class="seek-ayah-markers" id="seekAyahMarkers"></div>
+            <div class="seek-range-marker" id="seekMarkerStart"></div>
+            <div class="seek-range-marker" id="seekMarkerEnd"></div>
+            <div class="seek-thumb" id="seekThumb"></div>
+          </div>
+        </div>
+        <span class="time" id="timeTotal">0:00</span>
+      </div>
+    </div>
+    <div class="extras">
+      <button class="chip" id="rangeBtn" title="نطاق التلاوة"><svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z"/></svg>نطاق</button>
+      <button class="chip" id="speedBtn" title="سرعة">1×</button>
+      <div class="volume"><button class="btn-ctrl" id="muteBtn" aria-label="كتم"><svg viewBox="0 0 24 24" id="volIcon"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05A4.47 4.47 0 0 0 16.5 12zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg></button><div class="vol-slider" id="volSlider" role="slider" tabindex="0" aria-label="مستوى الصوت" aria-valuemin="0" aria-valuemax="100" aria-valuenow="90"><div class="vol-track"><div class="vol-fill" id="volFill"></div></div></div></div>
+    </div>
+  </div>
+</footer>
+
+<div class="overlay" id="overlay"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head"><h2>قائمة التشغيل</h2><small id="drawerCount">0 سورة</small><button class="icon-btn" id="closeDrawer" aria-label="إغلاق" style="width:36px;height:36px;"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button></div>
+  <div class="drawer-list" id="qlist"></div>
+  <div class="drawer-foot"><button class="dbtn primary" id="playQueueBtn"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> تشغيل</button><button class="dbtn icon-only" id="shuffleQueueBtn" title="خلط"><svg viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg></button><button class="dbtn icon-only danger" id="clearQueueBtn" title="مسح"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button></div>
+</aside>
+
+<div class="modal-overlay" id="sleepOverlay" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-head"><h3><svg viewBox="0 0 24 24"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4a9 9 0 0 0-9 9 9 9 0 0 0 18 0c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>مؤقت النوم</h3><button class="modal-close" data-close="sleepOverlay" aria-label="إغلاق"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button></div>
+    <div class="modal-body"><div class="hint">سيتم إيقاف التشغيل تلقائيًا بعد المدة المحددة.</div><div class="field"><label>المدة</label><div class="field-row"><input type="number" id="sleepHours" min="0" max="12" placeholder="ساعات"/><input type="number" id="sleepMinutes" min="0" max="59" placeholder="دقائق"/></div></div><div class="field"><label>اختصارات</label><div class="presets" id="sleepPresets"><button data-min="5">5 د</button><button data-min="15">15 د</button><button data-min="30" class="active">30 د</button><button data-min="45">45 د</button><button data-min="60">ساعة</button></div></div><div class="active-info" id="sleepActiveInfo"><svg viewBox="0 0 24 24"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4a9 9 0 0 0-9 9 9 9 0 0 0 18 0c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg><span id="sleepActiveText"></span></div></div>
+    <div class="modal-foot"><button class="dbtn danger" id="sleepCancel">إلغاء</button><button class="dbtn primary" id="sleepStart">بدء</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="downloadOverlay" role="dialog" aria-modal="true">
+  <div class="modal wide">
+    <div class="modal-head"><h3><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>تحميل السور<small id="downloadReciterName" style="color:var(--text-3);font-weight:400;font-size:.78em;margin-inline-start:.5rem"></small></h3><button class="modal-close" data-close="downloadOverlay" aria-label="إغلاق"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button></div>
+    <div class="modal-body tight"><div class="hint">اختر السور للاستماع بدون إنترنت.</div><div class="dl-head-actions"><label><input type="checkbox" id="dlSelectAll" style="width:1rem;height:1rem;accent-color:var(--gold)"/>تحديد الكل</label><span class="count-pill" id="dlCountPill">0 محددة</span></div><div class="dl-list" id="dlList"></div></div>
+    <div class="modal-foot"><button class="dbtn" id="dlCloseBtn">إغلاق</button><button class="dbtn primary" id="dlStartBtn" disabled><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>تحميل (<span id="dlStartCount">0</span>)</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="storageOverlay" role="dialog" aria-modal="true">
+  <div class="modal wide">
+    <div class="modal-head"><h3><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>البيانات المحمّلة</h3><button class="modal-close" data-close="storageOverlay" aria-label="إغلاق"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button></div>
+    <div class="modal-body"><div class="storage-summary"><div style="display:flex;align-items:center;gap:.5rem"><svg viewBox="0 0 24 24" style="width:1.1rem;height:1.1rem;color:var(--gold)"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg><b style="font-size:.85rem">مساحة التخزين</b></div><div class="storage-bar"><i id="storageBarFill" style="width:0%"></i></div><div class="storage-labels"><span>المستخدم: <b id="storageUsed">0 MB</b></span><span>المتاح: <b id="storageAvail">—</b></span></div><div class="storage-stats"><div class="storage-stat"><b id="storageCount">0</b><span>سورة</span></div><div class="storage-stat"><b id="storageReciters">0</b><span>قارئ</span></div><div class="storage-stat"><b id="storageTotal">0 MB</b><span>الحجم</span></div></div></div><div id="storageList"></div></div>
+    <div class="modal-foot"><button class="dbtn danger" id="storageClearAll">مسح الكل</button><button class="dbtn primary" id="storageCloseBtn">إغلاق</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"><svg viewBox="0 0 24 24" id="toastIcon"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span id="toastMsg"></span></div>
+<audio id="audio" preload="metadata" playsinline></audio>
+
+<script src="js/app.js"></script>
+<script src="js/pwa.js"></script>
+</body>
+</html>
