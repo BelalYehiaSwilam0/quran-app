@@ -1198,7 +1198,18 @@ function bindDrag(el, onR) {
   window.addEventListener("touchend", up, { passive: true });
   window.addEventListener("touchcancel", up, { passive: true });
 }
-bindDrag(els.seek, (r) => { const t = els.audio.duration; if (!isFinite(t) || t <= 0) return; els.seekFill.style.transform = `scaleX(${r})`; els.seekThumb.style.left = (r * 100).toFixed(3) + "%"; els.timeCur.textContent = fmtTime(r * t); Audio.seekTo(r * t); });
+bindDrag(els.seek, (r) => {
+  const t = els.audio.duration;
+  els.seekFill.style.transform = `scaleX(${r})`;
+  els.seekThumb.style.left = (r * 100).toFixed(3) + "%";
+  if (isFinite(t) && t > 0) {
+    els.timeCur.textContent = fmtTime(r * t);
+    Audio.seekTo(r * t);
+    state._pendingResume = { time: r * t, wasPlaying: state.playing };
+  } else {
+    state._pendingResume = { ratio: r, wasPlaying: state.playing, time: 0 };
+  }
+});
 bindDrag(els.volSlider, (r) => Audio.setVolume(r));
 
 /* ══════════ Mobile Sidebar ══════════ */
@@ -1479,8 +1490,47 @@ async function init() {
     else toast(`جاهز ✓`, "success");
   }, 800);
 
-  window.addEventListener("online", () => { toast("🌐 عاد الاتصال", "info"); });
-  window.addEventListener("offline", () => { const dc = state.downloads.filter(d => d.reciterId === state.reciterId).length; if (dc > 0) toast(`📴 ${dc} سورة محمّلة تعمل بدون إنترنت`, "success"); else toast("📴 انقطع الاتصال", "info"); });
+   window.addEventListener("online", () => {
+    toast("🌐 عاد الاتصال", "info");
+    /* ⭐ استئناف التشغيل لو كان فيه صوت معلّق بسبب قطع الاتصال */
+    if (state._pendingResume && state.current) {
+      const resumeAt = state._pendingResume.time || 0;
+      const wasPlaying = state._pendingResume.wasPlaying;
+      state._pendingResume = null;
+      const isDownloaded = Downloads.isDownloaded(state.reciterId, state.current);
+      if (!isDownloaded) {
+        try {
+          const newSrc = getSurahUrl(state.reciterId, state.current);
+          if (els.audio.src !== newSrc) {
+            els.audio.src = newSrc;
+            els.audio.load();
+          }
+          const onMeta = () => {
+            els.audio.removeEventListener("loadedmetadata", onMeta);
+            const dur = els.audio.duration;
+            const target = (isFinite(dur) && dur > 0) ? Math.min(resumeAt, dur - 0.5) : resumeAt;
+            try { els.audio.currentTime = target; state.currentTime = target; } catch(_){}
+            if (wasPlaying) Audio.play();
+            UI.progress();
+          };
+          if (isFinite(els.audio.duration) && els.audio.duration > 0) onMeta();
+          else els.audio.addEventListener("loadedmetadata", onMeta);
+        } catch(_) {}
+      }
+    }
+  });
+  window.addEventListener("offline", () => {
+    const dc = state.downloads.filter(d => d.reciterId === state.reciterId).length;
+    /* ⭐ احفظ آخر مكان + حالة التشغيل عشان نستأنف لما النت يرجع */
+    if (state.current && state.playing) {
+      state._pendingResume = {
+        time: els.audio.currentTime || state.currentTime || 0,
+        wasPlaying: true
+      };
+    }
+    if (dc > 0) toast(`📴 ${dc} سورة محمّلة تعمل بدون إنترنت`, "success");
+    else toast("📴 انقطع الاتصال", "info");
+  });
 }
 
 setInterval(() => { if (state.current && !els.audio.paused) { state.currentTime = els.audio.currentTime; saveSoon(); } }, CONFIG.progressSaveEveryMs);
