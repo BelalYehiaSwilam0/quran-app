@@ -1,9 +1,9 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   SERVICE WORKER — القرآن الكريم
-   ⚠️ مهم: كل مرة تعمل تحديث، غيّر رقم CACHE_VERSION هنا
+   SERVICE WORKER — القرآن الكريم v2.0.0
+   ⚠️ كل مرة تعدّل → زوّد رقم CACHE_VERSION
    ═══════════════════════════════════════════════════════════════════════ */
 
-const CACHE_VERSION = 'v1.0.2';
+const CACHE_VERSION = 'v2.0.0';
 const CACHE_NAME = `quran-cache-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -24,7 +24,7 @@ self.addEventListener('install', (event) => {
         caches.open(CACHE_NAME)
             .then((cache) => cache.addAll(APP_SHELL))
             .catch((err) => console.warn('[SW] pre-cache failed:', err))
-            .then(() => self.skipWaiting())  // ⭐ الجديد: يتفعّل فورًا
+            .then(() => self.skipWaiting())
     );
 });
 
@@ -46,13 +46,17 @@ self.addEventListener('fetch', (event) => {
     if (event.request.method !== 'GET') return;
     const url = new URL(event.request.url);
 
-    // 1) لا تخزين لملفات الصوت و API
+    // ⭐ 1) منع HTTP Cache تمامًا للصوت و API
+    // (الصوتيات اللي المستخدم نزّلها بتتحفظ في IndexedDB — مش هنا)
     if (
         url.hostname.includes('mp3quran.net') ||
         url.hostname.includes('alquran.cloud') ||
         url.hostname.includes('archive.org')
     ) {
-        event.respondWith(fetch(event.request).catch(() => new Response('', { status: 503 })));
+        event.respondWith(
+            fetch(event.request, { cache: 'no-store', credentials: 'omit' })
+                .catch(() => new Response('', { status: 503 }))
+        );
         return;
     }
 

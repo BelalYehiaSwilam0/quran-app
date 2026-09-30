@@ -1,0 +1,646 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   ADHKAR — أذكار المسلم
+   ═══════════════════════════════════════════════════════════════════════ */
+/* ═══ Backdrop ═══ */
+.ad-backdrop{
+  position:fixed;inset:0;
+  background:var(--backdrop-modal);
+  opacity:0;pointer-events:none;
+  transition:opacity var(--t-med);
+  z-index:9998;
+}
+.ad-backdrop.on{opacity:1;pointer-events:auto}
+
+/* ═══ Panel ═══ */
+.ad-panel{
+  position:fixed;
+  left:0;right:0;bottom:0;top:auto;
+  width:100%;
+  height:min(94vh,60rem);
+  max-height:94dvh;
+  background:var(--surface-modal);
+  border:1px solid var(--border-2);
+  border-bottom:none;
+  border-radius:1.25rem 1.25rem 0 0;
+  box-shadow:0 -20px 60px rgba(0,0,0,.55);
+  z-index:9999;
+  display:flex;flex-direction:column;
+  transform:translateY(100%);
+  opacity:0;
+  pointer-events:none;
+  transition:transform var(--t-slow),opacity var(--t-slow);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+  overscroll-behavior:contain;
+  contain:layout style;  
+}
+.ad-panel.on{transform:translateY(0);opacity:1;pointer-events:auto}
+.ad-panel::before{
+  content:"";
+  position:absolute;top:.5rem;left:50%;transform:translateX(-50%);
+  width:2.5rem;height:.25rem;border-radius:2px;
+  background:var(--border-2);pointer-events:none;
+}
+
+.ad-toast{
+  position:fixed;
+  bottom:calc(1.5rem + env(safe-area-inset-bottom,0px));
+  left:50%;transform:translate(-50%,20px);
+  background:var(--bg-2);border:1px solid var(--gold-line);
+  color:var(--text);padding:.7rem 1.2rem;border-radius:var(--r-md);
+  font-size:.85rem;font-weight:600;
+  box-shadow:0 10px 40px rgba(0,0,0,.5);
+  opacity:0;pointer-events:none;
+  transition:opacity var(--t-med),transform var(--t-med);
+  z-index:20000;display:flex;align-items:center;gap:8px;
+  max-width:min(90vw,24rem);font-family:inherit;
+}
+.ad-toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ═══ Head ═══ */
+.ad-head{
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  gap:var(--gap);
+  align-items:center;
+  padding:1.4rem clamp(.9rem,2vw,1.25rem) clamp(.7rem,1.4vw,1rem);
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.ad-head-title{
+  display:flex;align-items:center;gap:8px;
+  justify-content:center;min-width:0;
+}
+.ad-head-title svg{width:1.2rem;height:1.2rem;color:var(--gold);flex-shrink:0}
+.ad-head-title h3{
+  font-size:clamp(.9rem,1.1vw,1rem);font-weight:700;
+  color:var(--text);text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ad-head-title h3 small{
+  display:block;font-size:.7em;font-weight:500;
+  color:var(--text-3);margin-top:2px;
+}
+
+.ad-icon-btn{
+  width:clamp(2.1rem,3.2vw,2.4rem);
+  height:clamp(2.1rem,3.2vw,2.4rem);
+  border-radius:var(--r-md);
+  display:grid;place-items:center;
+  background:var(--overlay-1);
+  border:1px solid var(--border);
+  color:var(--text-3);
+  transition:all var(--t-fast);
+  flex-shrink:0;
+}
+.ad-icon-btn:hover{
+  color:var(--gold);
+  border-color:var(--gold-line);
+  background:var(--gold-soft);
+}
+.ad-icon-btn svg{width:55%;height:55%}
+
+/* ═══ Search ═══ */
+.ad-search-wrap{
+  padding:clamp(.7rem,1.4vw,.9rem) clamp(.9rem,2vw,1.25rem);
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.ad-search{
+  display:flex;align-items:center;gap:10px;
+  padding:clamp(.65rem,1.2vw,.8rem) clamp(.85rem,1.6vw,1rem);
+  border-radius:var(--r-lg);
+  background:var(--overlay-1);
+  border:1px solid var(--border);
+  transition:all var(--t-fast);
+}
+.ad-search:focus-within{
+  border-color:var(--gold-line);
+  background:var(--gold-soft);
+}
+.ad-search>svg{
+  width:1.05rem;height:1.05rem;
+  color:var(--text-3);flex-shrink:0;
+  transition:color var(--t-fast);
+}
+.ad-search:focus-within>svg{color:var(--gold)}
+.ad-search input{
+  flex:1;min-width:0;
+  color:var(--text);
+  font-size:clamp(.82rem,1vw,.92rem);
+}
+.ad-search input::placeholder{color:var(--text-3)}
+.ad-search .ad-clear-btn{
+  width:1.4rem;height:1.4rem;border-radius:50%;
+  background:var(--overlay-3);
+  color:var(--text-3);
+  display:none;place-items:center;flex-shrink:0;
+}
+.ad-search.has-text .ad-clear-btn{display:grid}
+.ad-search .ad-clear-btn:hover{
+  color:var(--rose);
+  background:rgba(224,93,93,.15);
+}
+.ad-search .ad-clear-btn svg{width:60%;height:60%}
+
+/* ═══ Body ═══ */
+.ad-body{
+  flex:1 1 auto;min-height:0;
+  overflow-y:auto;overflow-x:hidden;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+  padding:.5rem clamp(.75rem,1.6vw,1rem) 1.5rem;
+}
+.ad-body::-webkit-scrollbar{width:8px}
+.ad-body::-webkit-scrollbar-thumb{
+  background:var(--gold-soft);border-radius:99px;
+}
+.ad-body::-webkit-scrollbar-thumb:hover{background:var(--gold-line)}
+
+/* ═══ Group (accordion) ═══ */
+.ad-group{
+  margin-bottom:6px;
+  border:1px solid var(--border);
+  border-radius:var(--r-md);
+  overflow:hidden;
+  background:var(--surface-row);
+  transition:border-color var(--t-fast);
+}
+.ad-group:hover{border-color:var(--border-2)}
+.ad-group.expanded{border-color:var(--gold-line)}
+.ad-group-head{
+  display:grid;
+  grid-template-columns:auto 1fr auto auto;
+  gap:10px;align-items:center;
+  width:100%;
+  padding:clamp(.75rem,1.4vw,.9rem) clamp(.85rem,1.5vw,1rem);
+  text-align:right;cursor:pointer;
+  font-family:inherit;color:var(--text);
+  background:var(--overlay-1);
+  transition:background-color var(--t-fast);
+}
+.ad-group-head:hover{background:var(--gold-soft)}
+.ad-group.expanded .ad-group-head{
+  background:var(--gold-soft);
+  border-bottom:1px solid var(--gold-line);
+}
+.ad-group-emoji{
+  font-size:clamp(1.05rem,1.3vw,1.2rem);
+  line-height:1;flex-shrink:0;user-select:none;
+}
+.ad-group-name{
+  font-size:clamp(.82rem,1vw,.92rem);
+  font-weight:700;color:var(--text);
+  text-align:right;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ad-group-count{
+  font-size:clamp(.65rem,.82vw,.72rem);
+  color:var(--text-3);font-weight:700;
+  font-variant-numeric:tabular-nums;
+  padding:3px 8px;border-radius:99px;
+  background:var(--overlay-2);
+  flex-shrink:0;
+}
+.ad-group-chevron{
+  width:1rem;height:1rem;
+  color:var(--text-3);flex-shrink:0;
+  transition:transform var(--t-med);
+}
+.ad-group.expanded .ad-group-chevron{
+  transform:rotate(180deg);
+  color:var(--gold-2);
+}
+.ad-group-body{
+  max-height:0;overflow:hidden;
+  transition:max-height .35s var(--ease);
+}
+.ad-group.expanded .ad-group-body{
+  max-height:5000px;overflow-y:auto;
+}
+
+/* ═══ Item (row) ═══ */
+.ad-item{
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  gap:10px;align-items:center;
+  width:100%;
+  padding:clamp(.7rem,1.3vw,.85rem) clamp(.85rem,1.5vw,1rem);
+  text-align:right;cursor:pointer;
+  font-family:inherit;color:var(--text);
+  border-top:1px solid var(--border);
+  transition:background-color var(--t-fast);
+}
+.ad-item:first-child{border-top:none}
+.ad-item:hover{background:var(--overlay-1)}
+.ad-item-bullet{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--gold);flex-shrink:0;opacity:.6;
+  transition:all var(--t-fast);
+}
+.ad-item.done .ad-item-bullet{
+  background:var(--green);opacity:1;
+  box-shadow:0 0 0 4px rgba(16,185,129,.15);
+}
+.ad-item-name{
+  font-size:clamp(.78rem,1vw,.88rem);
+  font-weight:600;color:var(--text);
+  white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;min-width:0;
+}
+.ad-item-progress{
+  font-size:clamp(.62rem,.8vw,.7rem);
+  color:var(--text-3);font-weight:700;
+  font-variant-numeric:tabular-nums;
+  padding:3px 8px;border-radius:99px;
+  background:var(--overlay-2);flex-shrink:0;
+}
+.ad-item.done .ad-item-progress{
+  color:var(--green);
+  background:rgba(16,185,129,.1);
+}
+
+/* ═══ Empty state ═══ */
+.ad-empty{
+  padding:clamp(2.5rem,5vw,4rem) clamp(1rem,2vw,1.5rem);
+  text-align:center;color:var(--text-3);
+  display:flex;flex-direction:column;align-items:center;
+  gap:var(--gap);
+}
+.ad-empty svg{
+  width:clamp(2.5rem,4vw,3rem);
+  height:clamp(2.5rem,4vw,3rem);
+  opacity:.3;color:var(--gold);
+}
+.ad-empty p{font-size:clamp(.78rem,1vw,.88rem);line-height:1.7}
+.ad-empty b{color:var(--gold-2);font-weight:700}
+
+/* ═══ Detail View ═══ */
+.ad-detail{
+  position:absolute;inset:0;
+  background:var(--surface-modal);
+  z-index:5;
+  display:flex;flex-direction:column;
+  border-radius:inherit;
+  transform:translateX(-100%);
+  opacity:0;pointer-events:none;
+  transition:transform var(--t-med),opacity var(--t-med);
+}
+.ad-detail.on{
+  transform:translateX(0);
+  opacity:1;pointer-events:auto;
+}
+
+.ad-detail-head{
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  gap:var(--gap);align-items:center;
+  padding:clamp(.9rem,1.6vw,1.1rem) clamp(.9rem,2vw,1.25rem);
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+  background:var(--surface-modal);
+}
+.ad-detail-title{
+  font-size:clamp(.85rem,1.05vw,.95rem);
+  font-weight:700;color:var(--text);
+  text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  min-width:0;
+}
+
+.ad-detail-body{
+  flex:1 1 auto;min-height:0;
+  overflow-y:auto;
+  padding:clamp(1rem,2.5vw,2rem) clamp(.9rem,2vw,1.5rem);
+  display:flex;flex-direction:column;
+  gap:clamp(.85rem,1.8vw,1.25rem);
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior:contain;
+}
+
+/* النص — أبيض Bold */
+.ad-text{
+  text-align:center;color:#fff;
+  max-width:100%;word-wrap:break-word;
+  direction:rtl;
+  transition:color var(--t-med);
+}
+[data-theme="light"] .ad-text{color:#0a0d13}
+
+.ad-text.quran{
+  font-family:var(--font-quran);
+  font-size:clamp(1.5rem,3vw + .7rem,2.75rem);
+  line-height:2.2;font-weight:700;letter-spacing:0;
+  text-shadow:0 0 24px rgba(212,175,55,.15),0 3px 10px rgba(0,0,0,.4);
+}
+.ad-text.hadith{
+  font-family:"Noto Naskh Arabic","Amiri","Tahoma",serif;
+  font-size:clamp(1.3rem,1.8vw + .65rem,1.85rem);
+  line-height:2.15;font-weight:700;letter-spacing:0;
+  word-spacing:0;
+  text-shadow:0 1px 3px rgba(0,0,0,.2);
+}
+
+/* Action type */
+.ad-action-card{
+  padding:clamp(1.5rem,3vw,2.5rem) clamp(1rem,2vw,1.5rem);
+  background:linear-gradient(135deg,rgba(212,175,55,.08),rgba(212,175,55,.02));
+  border:1px dashed var(--gold-line);
+  border-radius:var(--r-lg);
+  text-align:center;
+  display:flex;flex-direction:column;align-items:center;
+  gap:clamp(.75rem,1.5vw,1rem);
+}
+.ad-action-card svg.book{
+  width:clamp(2.5rem,4vw,3rem);
+  height:clamp(2.5rem,4vw,3rem);
+  color:var(--gold);
+}
+.ad-action-card .ad-action-name{
+  font-family:"Noto Naskh Arabic","Amiri","Tahoma",serif;
+  font-size:clamp(1.5rem,2.6vw + .5rem,2.25rem);
+  font-weight:700;
+  color:var(--gold-2);
+  line-height:1.7;
+}
+.ad-action-card .ad-action-sub{
+  font-family:"Noto Naskh Arabic","Amiri","Tahoma",serif;
+  font-size:clamp(.9rem,1.05vw,1rem);
+  color:var(--text-2);
+  line-height:1.9;max-width:32rem;font-weight:500;
+}
+
+/* Source */
+.ad-source{
+  display:flex;align-items:center;justify-content:center;
+  gap:6px;
+  font-size:clamp(.72rem,.9vw,.82rem);
+  color:var(--text-3);font-weight:600;
+  padding:clamp(.6rem,1vw,.75rem) clamp(.8rem,1.4vw,1rem);
+  background:var(--surface-row);
+  border:1px solid var(--border);
+  border-radius:var(--r-md);
+  text-align:center;flex-wrap:wrap;
+}
+.ad-source svg{width:1.1em;height:1.1em;color:var(--gold);flex-shrink:0}
+.ad-source b{color:var(--gold-2);font-weight:700}
+
+/* ═══ Counter Box (count > 1) ═══ */
+.ad-counter-box{
+  padding:clamp(1.1rem,2.2vw,1.5rem);
+  background:var(--overlay-1);
+  border:1px solid var(--gold-line);
+  border-radius:var(--r-lg);
+  display:flex;flex-direction:column;
+  gap:clamp(.85rem,1.6vw,1.1rem);
+}
+.ad-counter-box.done{
+  background:linear-gradient(180deg,rgba(16,185,129,.08),rgba(16,185,129,.02));
+  border-color:rgba(16,185,129,.4);
+}
+.ad-counter-display{
+  display:grid;grid-template-columns:1fr auto 1fr;
+  gap:clamp(.5rem,1.5vw,1rem);align-items:center;
+  text-align:center;
+}
+.ad-counter-num{
+  font-size:clamp(2rem,4.5vw + .5rem,3.75rem);
+  font-weight:900;color:var(--gold-2);
+  line-height:1;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em;transition:color var(--t-fast);
+}
+.ad-counter-box.done .ad-counter-num{color:var(--green-2)}
+.ad-counter-divider{
+  width:2px;height:clamp(2.2rem,4.5vw,3rem);
+  background:var(--border-2);border-radius:2px;
+}
+.ad-counter-target{
+  font-size:clamp(1.35rem,2.5vw + .4rem,2.1rem);
+  font-weight:800;color:var(--text-3);
+  line-height:1;font-variant-numeric:tabular-nums;
+}
+.ad-counter-target small{
+  display:block;font-size:.4em;font-weight:600;
+  color:var(--text-3);margin-top:4px;letter-spacing:.5px;
+}
+.ad-counter-bar{
+  height:9px;border-radius:99px;
+  background:var(--overlay-3);
+  overflow:hidden;position:relative;
+}
+.ad-counter-bar i{
+  display:block;height:100%;
+  background:linear-gradient(90deg,var(--gold),var(--gold-2));
+  border-radius:99px;
+  transition:width .3s var(--ease);width:0;
+}
+.ad-counter-box.done .ad-counter-bar i{
+  background:linear-gradient(90deg,var(--green),var(--green-2));
+}
+.ad-counter-tap{
+  padding:clamp(.85rem,1.6vw,1.1rem);
+  background:linear-gradient(135deg,var(--gold),var(--gold-2));
+  color:var(--on-gold);
+  border-radius:var(--r-md);
+  font-weight:900;
+  font-size:clamp(.9rem,1.15vw,1.05rem);
+  cursor:pointer;font-family:inherit;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  box-shadow:0 6px 20px var(--gold-soft);
+  transition:transform var(--t-fast),box-shadow var(--t-fast);
+  user-select:none;
+  min-height:clamp(3.25rem,5.5vw,3.75rem);
+}
+.ad-counter-tap:hover{transform:translateY(-2px);box-shadow:0 10px 28px var(--gold-line)}
+.ad-counter-tap:active{transform:scale(.97)}
+.ad-counter-tap svg{width:1.3em;height:1.3em}
+.ad-counter-tap.complete{
+  background:linear-gradient(135deg,var(--green),var(--green-2));
+  color:#fff;
+  box-shadow:0 6px 20px rgba(16,185,129,.3);
+}
+.ad-counter-tap.complete:hover{
+  transform:none;
+  box-shadow:0 6px 20px rgba(16,185,129,.3);
+}
+.ad-counter-actions{
+  display:grid;grid-template-columns:1fr 1fr;gap:8px;
+}
+.ad-counter-action{
+  padding:clamp(.65rem,1.2vw,.8rem);
+  background:var(--overlay-2);
+  border:1px solid var(--border);
+  border-radius:var(--r-md);
+  font-family:inherit;
+  font-size:clamp(.78rem,1vw,.86rem);
+  font-weight:700;color:var(--text-2);
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:6px;
+  transition:all var(--t-fast);
+}
+.ad-counter-action:hover{
+  color:var(--gold-2);
+  border-color:var(--gold-line);
+  background:var(--gold-soft);
+}
+.ad-counter-action.copied{
+  color:var(--green);
+  border-color:rgba(16,185,129,.4);
+  background:rgba(16,185,129,.08);
+}
+.ad-counter-action svg{width:1.1em;height:1.1em}
+
+/* ═══ Single Box (count === 1) ═══ */
+.ad-single-box{
+  padding:clamp(1.1rem,2.2vw,1.5rem);
+  background:var(--overlay-1);
+  border:1px solid var(--border);
+  border-radius:var(--r-lg);
+  display:flex;flex-direction:column;
+  gap:clamp(.75rem,1.4vw,1rem);
+}
+.ad-single-box.done{
+  background:linear-gradient(180deg,rgba(16,185,129,.08),rgba(16,185,129,.02));
+  border-color:rgba(16,185,129,.4);
+}
+.ad-single-tap{
+  padding:clamp(.9rem,1.6vw,1.1rem);
+  background:linear-gradient(135deg,var(--gold),var(--gold-2));
+  color:var(--on-gold);
+  border-radius:var(--r-md);
+  font-weight:900;
+  font-size:clamp(.9rem,1.15vw,1.05rem);
+  cursor:pointer;font-family:inherit;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  box-shadow:0 6px 20px var(--gold-soft);
+  transition:transform var(--t-fast),box-shadow var(--t-fast);
+  user-select:none;
+  min-height:clamp(3.25rem,5.5vw,3.75rem);
+}
+.ad-single-tap:hover{transform:translateY(-2px);box-shadow:0 10px 28px var(--gold-line)}
+.ad-single-tap:active{transform:scale(.97)}
+.ad-single-tap svg{width:1.3em;height:1.3em}
+.ad-single-tap.complete{
+  background:linear-gradient(135deg,var(--green),var(--green-2));
+  color:#fff;
+  box-shadow:0 6px 20px rgba(16,185,129,.3);
+}
+.ad-single-tap.complete:hover{
+  transform:none;
+  box-shadow:0 6px 20px rgba(16,185,129,.3);
+}
+.ad-single-actions{display:flex;gap:8px}
+.ad-single-actions .ad-counter-action{flex:1}
+
+/* ═══ Desktop ═══ */
+@media(min-width:881px){
+  .ad-panel{
+    position:fixed;
+    top:5vh;bottom:auto;left:50%;right:auto;
+    transform:translateX(-50%) translateY(20px);
+    width:min(46rem,calc(100vw - 2rem));
+    height:min(88vh,50rem);
+    max-height:92dvh;
+    border-radius:clamp(1rem,1.8vw,1.25rem);
+    border:1px solid var(--border-2);
+  }
+  .ad-panel::before{display:none}
+  .ad-panel.on{transform:translateX(-50%) translateY(0)}
+  .ad-head{padding:clamp(1rem,1.8vw,1.25rem) clamp(1.25rem,2vw,1.5rem) clamp(.85rem,1.4vw,1rem)}
+  .ad-search-wrap{padding:clamp(.7rem,1.2vw,.9rem) clamp(1.25rem,2vw,1.5rem)}
+  .ad-body{padding:.5rem clamp(1rem,1.8vw,1.25rem) 1.5rem}
+  .ad-text.quran{font-size:clamp(1.8rem,2.5vw + .8rem,2.8rem)}
+  .ad-text.hadith{font-size:clamp(1.5rem,1.5vw + .8rem,1.9rem)}
+}
+
+/* ═══ Mobile ═══ */
+@media(max-width:640px){
+  .ad-panel{
+    height:100dvh;max-height:100dvh;
+    border-radius:0;border:none;top:0;
+  }
+  .ad-panel::before{display:none}
+  .ad-head{padding:1rem .75rem .6rem;gap:8px}
+  .ad-head-title h3{font-size:.9rem}
+  .ad-head-title h3 small{font-size:.72em}
+  .ad-search-wrap{padding:.5rem .75rem .7rem}
+  .ad-search{padding:.6rem .75rem;gap:8px}
+  .ad-search input{font-size:.88rem}
+  .ad-body{padding:.35rem .6rem 1.25rem}
+  .ad-group{margin-bottom:5px}
+  .ad-group-head{padding:.7rem .75rem;gap:8px}
+  .ad-group-emoji{font-size:1.1rem}
+  .ad-group-name{font-size:.86rem}
+  .ad-group-count{font-size:.68rem;padding:2px 7px}
+  .ad-item{padding:.7rem .75rem;gap:8px}
+  .ad-item-name{
+    font-size:.82rem;
+    white-space:normal;line-height:1.4;
+    display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden;
+  }
+  .ad-item-progress{font-size:.66rem;padding:2px 7px}
+  .ad-detail-head{padding:.7rem .75rem;gap:8px}
+  .ad-detail-title{font-size:.85rem}
+  .ad-detail-body{padding:.9rem .8rem 1.25rem;gap:.8rem}
+  .ad-text.quran{font-size:clamp(1.35rem,5.5vw,1.7rem);line-height:2.2}
+  .ad-text.hadith{font-size:clamp(1.2rem,4.5vw,1.5rem);line-height:2.15}
+  .ad-action-card{padding:1.5rem 1rem;gap:.75rem}
+  .ad-action-card .ad-action-name{font-size:1.4rem}
+  .ad-action-card .ad-action-sub{font-size:.85rem;line-height:1.85}
+  .ad-source{padding:.55rem .7rem;font-size:.7rem}
+  .ad-counter-box{padding:1rem;gap:.75rem}
+  .ad-counter-num{font-size:2.4rem}
+  .ad-counter-target{font-size:1.6rem}
+  .ad-counter-target small{font-size:.42em;margin-top:3px}
+  .ad-counter-divider{height:2.4rem}
+  .ad-counter-bar{height:8px}
+  .ad-counter-tap{min-height:3.25rem;padding:.85rem;font-size:.95rem}
+  .ad-counter-action{padding:.65rem .5rem;font-size:.8rem}
+  .ad-single-box{padding:1rem;gap:.75rem}
+  .ad-single-tap{min-height:3.25rem;padding:.85rem;font-size:.95rem}
+}
+
+@media(max-width:400px){
+  .ad-head{padding:.85rem .65rem .5rem}
+  .ad-head-title h3{font-size:.84rem}
+  .ad-icon-btn{width:2rem;height:2rem}
+  .ad-body{padding:.3rem .5rem 1rem}
+  .ad-group-head{padding:.65rem .7rem;gap:6px}
+  .ad-item{padding:.65rem .7rem;gap:6px}
+  .ad-item-name{font-size:.78rem}
+  .ad-text.quran{font-size:1.3rem;line-height:2.15}
+  .ad-text.hadith{font-size:1.15rem;line-height:2.1}
+  .ad-counter-num{font-size:2rem}
+  .ad-counter-target{font-size:1.4rem}
+}
+
+@media(max-width:340px){
+  .ad-text.quran{font-size:1.2rem;line-height:2.1}
+  .ad-text.hadith{font-size:1.08rem;line-height:2}
+  .ad-counter-num{font-size:1.75rem}
+  .ad-counter-target{font-size:1.25rem}
+}
+
+@media(max-height:500px) and (orientation:landscape){
+  .ad-panel{height:100dvh;max-height:100dvh;border-radius:0;top:0}
+  .ad-head{padding:.55rem .85rem .4rem}
+  .ad-head-title h3 small{display:none}
+  .ad-search-wrap{padding:.4rem .85rem .5rem}
+  .ad-body{padding:.3rem .65rem .9rem}
+  .ad-detail-head{padding:.55rem .85rem}
+  .ad-detail-body{padding:.7rem .9rem;gap:.65rem}
+  .ad-text.quran{font-size:clamp(1.1rem,3.5vh,1.5rem);line-height:1.95}
+  .ad-text.hadith{font-size:clamp(1rem,3vh,1.3rem);line-height:1.9}
+  .ad-counter-box{padding:.85rem;gap:.65rem}
+  .ad-counter-num{font-size:2rem}
+  .ad-counter-target{font-size:1.4rem}
+  .ad-counter-tap,.ad-single-tap{min-height:2.9rem;padding:.65rem;font-size:.9rem}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .ad-panel,.ad-detail,.ad-backdrop,.ad-group-body,.ad-group-chevron,
+  .ad-counter-bar i,.ad-counter-num{
+    transition-duration:.01ms!important;
+    animation-duration:.01ms!important;
+  }
+}
