@@ -2,30 +2,37 @@
 "use strict";
 
 /* ═══════════════════════════════════════════════════════════════════════
-   QURAN PLAYER v25.0
-   ✅ بحث عربي/إنجليزي + أرقام عربية/إنجليزية
-   ✅ وضع "نفس السورة كاملة" + تعطيل الحقول التلقائي
-   ✅ حذف cache-status / cacheBtn / cacheChip نهائيًا
-   ✅ لا تحميل تلقائي لكل التوقيتات — بس للسور اللي نزّلها المستخدم
-   ✅ عند تحميل سورة → تتحمّل معاها التوقيتات والنص
-   ✅ StoragePanel بتصميم أكورديون احترافي
-   ✅ v25.1 — IndexedDB تخزين فقط عند "تحميل" (مفيش تخزين تلقائي)
+   QURAN PLAYER v31.3 — Production Ready
+   ✅ v30: OfflineResume + Force-reload + Unlimited retry + RAF + LRU
+   ✅ v31: Prefetcher — تحميل كل timings + texts في الخلفية (تلقائي، نسبي)
+   ✅ v31.3: إزالة polling — الاعتماد على online event + visibilitychange فقط
+           (صفر timers مستمرة، صفر استهلاك موارد في الخلفية)
    ═══════════════════════════════════════════════════════════════════════ */
 const CONFIG = {
-  padTo: 3,
-  defaultVolume: 0.9, defaultSpeed: 1, defaultEndBuffer: 0.05,
+  padTo: 3, defaultVolume: 0.9, defaultSpeed: 1, defaultEndBuffer: 0.05,
   storageKey: "quran-player-v24", themeStorageKey: "quran-player-theme",
-  saveDebounceMs: 800, progressSaveEveryMs: 3000, toastDurationMs: 2800,
+  saveDebounceMs: 1200, toastDurationMs: 2800,
   apiBaseUrl: "https://www.mp3quran.net/api/v3",
   textApiBaseUrl: "https://api.alquran.cloud/v1/surah/{n}/quran-uthmani",
-  preloadDelayMs: 150,
   autoClosePanelDelayMs: 450, maxRepeatCount: 100,
   repeatRestartDelayMs: 300, silentSwitchMs: 1500, themeFreezeMs: 60,
-  downloadConcurrency: 2,
-  rangeCheckIntervalMs: 60,
-  ayahBoundaryBufferMs: 150,
+  downloadConcurrency: 2, ayahBoundaryBufferMs: 150,
   idbName: "quran-player-downloads", idbStore: "audio", idbVersion: 2,
   idbTimingsStore: "timings", idbTextsStore: "texts",
+  TIMINGS_CACHE_MAX: 30, TEXTS_CACHE_MAX: 30, FAILED_FETCHES_MAX: 20,
+  PLAYING_SAVE_INTERVAL_MS: 45000, SAVE_DELTA_SEC: 3,
+  OFFLINE_RESUME_KEY: "quran-offline-resume-v1",
+  OFFLINE_RESUME_MAX_AGE: 6 * 3600 * 1000,
+  OFFLINE_RETRY_DELAY_MS: 2000,
+  OFFLINE_MAX_RETRIES: 30,
+  LS_MAX_BYTES: 10 * 1024 * 1024,
+  SUBTITLE_THROTTLE_MS: 250,
+  /* ⭐ v31: إعدادات الـ Prefetcher */
+  PREFETCH_CONCURRENCY: 3,
+  PREFETCH_DELAY_MS: 120,
+  PREFETCH_RETRY_MAX: 3,
+  PREFETCH_LS_KEY: "quran-prefetch-state-v1",
+  PREFETCH_AUTOSTART_DELAY_MS: 4000,
   fatihahWeights: [13, 13, 7, 10, 13, 10, 34],
   reciters: [
     { id: 1, name: "محمود خليل الحصري", rewayah: "حفص عن عاصم", server: "https://server13.mp3quran.net/husr/", timingKeys: ["الحصري"] },
@@ -48,10 +55,32 @@ const esc = str => String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;"
 const debounce = (fn, ms) => { let t; return function(...a){ clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); }; };
 const fmtBytes = (b) => { if (!b || b < 1024) return (b || 0) + " B"; if (b < 1048576) return (b / 1024).toFixed(1) + " KB"; if (b < 1073741824) return (b / 1048576).toFixed(2) + " MB"; return (b / 1073741824).toFixed(2) + " GB"; };
 
-/* ⭐ تحويل الأرقام العربية/الفارسية إلى إنجليزية */
-const AR_DIGITS = { '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9',
-                    '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9' };
+const AR_DIGITS = { '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9', '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9' };
 const arabicToEnglish = (str) => String(str).replace(/[٠-٩۰-۹]/g, ch => AR_DIGITS[ch] || ch);
+
+function lsSafeSet(key, value) {
+  try {
+    const v = typeof value === "string" ? value : JSON.stringify(value);
+    const estBytes = (key.length + v.length) * 2;
+    if (estBytes > CONFIG.LS_MAX_BYTES) return false;
+    localStorage.setItem(key, v);
+    return true;
+  } catch(_) { return false; }
+}
+function lsSafeGet(key) { try { return localStorage.getItem(key); } catch(_) { return null; } }
+function lsSafeRemove(key) { try { localStorage.removeItem(key); } catch(_){} }
+
+function createLRU(max) {
+  const map = new Map();
+  return {
+    has: k => map.has(k),
+    get(k) { if (!map.has(k)) return undefined; const v = map.get(k); map.delete(k); map.set(k, v); return v; },
+    set(k, v) { if (map.has(k)) map.delete(k); map.set(k, v); if (map.size > max) { const f = map.keys().next().value; map.delete(f); } },
+    delete: k => map.delete(k),
+    clear: () => map.clear(),
+    get size() { return map.size; }
+  };
+}
 
 const emptyRange = () => ({ active: false, surah: null, endSurah: null, crossSurah: false, phase: "leg1", mode: "ayah", startAyah: null, endAyah: null, startTime: 0, endTime: 0, _pendingMode: "ayah", estimated: false, openEnded: false, repeatCount: 1, repeatIndex: 0, sameSurah: false });
 
@@ -67,69 +96,65 @@ function getFatihahEstimated(duration) {
 
 const IDB = {
   _db: null,
-  async open() {
-    if (this._db) return this._db;
-    return new Promise((res, rej) => {
-      const req = indexedDB.open(CONFIG.idbName, CONFIG.idbVersion);
-      req.onupgradeneeded = e => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains(CONFIG.idbStore)) { const st = db.createObjectStore(CONFIG.idbStore, { keyPath: "key" }); st.createIndex("reciterId", "reciterId", { unique: false }); }
-        if (!db.objectStoreNames.contains(CONFIG.idbTimingsStore)) db.createObjectStore(CONFIG.idbTimingsStore, { keyPath: "key" });
-        if (!db.objectStoreNames.contains(CONFIG.idbTextsStore)) db.createObjectStore(CONFIG.idbTextsStore, { keyPath: "key" });
-      };
-      req.onsuccess = () => { this._db = req.result; res(this._db); };
-      req.onerror = () => rej(req.error);
-    });
-  },
+  async open() { if (this._db) return this._db; return new Promise((res, rej) => { const req = indexedDB.open(CONFIG.idbName, CONFIG.idbVersion); req.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains(CONFIG.idbStore)) { const st = db.createObjectStore(CONFIG.idbStore, { keyPath: "key" }); st.createIndex("reciterId", "reciterId", { unique: false }); } if (!db.objectStoreNames.contains(CONFIG.idbTimingsStore)) db.createObjectStore(CONFIG.idbTimingsStore, { keyPath: "key" }); if (!db.objectStoreNames.contains(CONFIG.idbTextsStore)) db.createObjectStore(CONFIG.idbTextsStore, { keyPath: "key" }); }; req.onsuccess = () => { this._db = req.result; res(this._db); }; req.onerror = () => rej(req.error); }); },
   async put(rec) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbStore, "readwrite"); tx.objectStore(CONFIG.idbStore).put(rec); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
   async getAll() { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbStore, "readonly").objectStore(CONFIG.idbStore).getAll(); req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error); }); },
   async delete(key) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbStore, "readwrite"); tx.objectStore(CONFIG.idbStore).delete(key); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
   async clear() { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbStore, "readwrite"); tx.objectStore(CONFIG.idbStore).clear(); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
   async putTiming(rid, surah, ayahs) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbTimingsStore, "readwrite"); tx.objectStore(CONFIG.idbTimingsStore).put({ key: `${rid}-${surah}`, reciterId: rid, surah, ayahs, ts: Date.now() }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
+  async getTiming(rid, surah) { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbTimingsStore, "readonly").objectStore(CONFIG.idbTimingsStore).get(`${rid}-${surah}`); req.onsuccess = () => res(req.result || null); req.onerror = () => rej(req.error); }); },
   async getAllTimings() { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbTimingsStore, "readonly").objectStore(CONFIG.idbTimingsStore).getAll(); req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error); }); },
+  async getAllTimingKeys() { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbTimingsStore, "readonly").objectStore(CONFIG.idbTimingsStore).getAllKeys(); req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error); }); },
   async deleteTiming(rid, surah) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbTimingsStore, "readwrite"); tx.objectStore(CONFIG.idbTimingsStore).delete(`${rid}-${surah}`); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
   async clearTimings() { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbTimingsStore, "readwrite"); tx.objectStore(CONFIG.idbTimingsStore).clear(); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
   async putText(surah, ayahs) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbTextsStore, "readwrite"); tx.objectStore(CONFIG.idbTextsStore).put({ key: surah, ayahs, ts: Date.now() }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
+  async getText(surah) { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbTextsStore, "readonly").objectStore(CONFIG.idbTextsStore).get(surah); req.onsuccess = () => res(req.result || null); req.onerror = () => rej(req.error); }); },
   async getAllTexts() { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbTextsStore, "readonly").objectStore(CONFIG.idbTextsStore).getAll(); req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error); }); },
+  async getAllTextKeys() { const db = await this.open(); return new Promise((res, rej) => { const req = db.transaction(CONFIG.idbTextsStore, "readonly").objectStore(CONFIG.idbTextsStore).getAllKeys(); req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error); }); },
   async deleteText(surah) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbTextsStore, "readwrite"); tx.objectStore(CONFIG.idbTextsStore).delete(surah); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
   async clearTexts() { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction(CONFIG.idbTextsStore, "readwrite"); tx.objectStore(CONFIG.idbTextsStore).clear(); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
 };
 
 const Theme = {
   ICONS: { sun: '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5m0 15v2.5M2 12h2.5m15 0H22M4.93 4.93l1.77 1.77m10.6 10.6l1.77 1.77M4.93 19.07l1.77-1.77m10.6-10.6l1.77-1.77" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>', moon: '<path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5c0-.34.02-.68.06-1A9 9 0 1 0 21.5 14.44c-.32.04-.66.06-1 .06z"/>' },
-  get() { try { const s = localStorage.getItem(CONFIG.themeStorageKey); if (s === "light" || s === "dark") return s; } catch(_){} try { if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light"; } catch(_){} return "dark"; },
+  get() { try { const s = lsSafeGet(CONFIG.themeStorageKey); if (s === "light" || s === "dark") return s; } catch(_){} try { if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light"; } catch(_){} return "dark"; },
   apply(t) { document.documentElement.setAttribute("data-theme", t); const i = document.getElementById("themeIcon"); if (i) i.innerHTML = t === "dark" ? this.ICONS.sun : this.ICONS.moon; const mi = document.getElementById("msThemeIcon"); if (mi) mi.innerHTML = t === "dark" ? this.ICONS.sun : this.ICONS.moon; const mv = document.getElementById("msThemeValue"); if (mv) mv.textContent = t === "dark" ? "ليلي" : "نهاري"; const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", t === "light" ? "#f6f2e8" : "#0a0d13"); },
-  toggle() { const cur = document.documentElement.getAttribute("data-theme") || "dark"; const nxt = cur === "dark" ? "light" : "dark"; document.documentElement.classList.add("theme-switching"); this.apply(nxt); requestAnimationFrame(() => setTimeout(() => document.documentElement.classList.remove("theme-switching"), CONFIG.themeFreezeMs)); try { localStorage.setItem(CONFIG.themeStorageKey, nxt); } catch(_){} return nxt; },
+  toggle() { const cur = document.documentElement.getAttribute("data-theme") || "dark"; const nxt = cur === "dark" ? "light" : "dark"; document.documentElement.classList.add("theme-switching"); this.apply(nxt); requestAnimationFrame(() => setTimeout(() => document.documentElement.classList.remove("theme-switching"), CONFIG.themeFreezeMs)); lsSafeSet(CONFIG.themeStorageKey, nxt); return nxt; },
   init() { this.apply(this.get()); }
 };
-(function(){ try { const s = localStorage.getItem(CONFIG.themeStorageKey); let t = "dark"; if (s === "light" || s === "dark") t = s; else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) t = "light"; document.documentElement.setAttribute("data-theme", t); } catch(_){} })();
+(function(){ try { const s = lsSafeGet(CONFIG.themeStorageKey); let t = "dark"; if (s === "light" || s === "dark") t = s; else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) t = "light"; document.documentElement.setAttribute("data-theme", t); } catch(_){} })();
 
 const RAW = [[1,"الفاتحة","Al-Fatihah",7,"مكية"],[2,"البقرة","Al-Baqarah",286,"مدنية"],[3,"آل عمران","Aal-Imran",200,"مدنية"],[4,"النساء","An-Nisa",176,"مدنية"],[5,"المائدة","Al-Ma'idah",120,"مدنية"],[6,"الأنعام","Al-An'am",165,"مكية"],[7,"الأعراف","Al-A'raf",206,"مكية"],[8,"الأنفال","Al-Anfal",75,"مدنية"],[9,"التوبة","At-Tawbah",129,"مدنية"],[10,"يونس","Yunus",109,"مكية"],[11,"هود","Hud",123,"مكية"],[12,"يوسف","Yusuf",111,"مكية"],[13,"الرعد","Ar-Ra'd",43,"مدنية"],[14,"إبراهيم","Ibrahim",52,"مكية"],[15,"الحجر","Al-Hijr",99,"مكية"],[16,"النحل","An-Nahl",128,"مكية"],[17,"الإسراء","Al-Isra",111,"مكية"],[18,"الكهف","Al-Kahf",110,"مكية"],[19,"مريم","Maryam",98,"مكية"],[20,"طه","Taha",135,"مكية"],[21,"الأنبياء","Al-Anbiya",112,"مكية"],[22,"الحج","Al-Hajj",78,"مدنية"],[23,"المؤمنون","Al-Mu'minun",118,"مكية"],[24,"النور","An-Nur",64,"مدنية"],[25,"الفرقان","Al-Furqan",77,"مكية"],[26,"الشعراء","Ash-Shu'ara",227,"مكية"],[27,"النمل","An-Naml",93,"مكية"],[28,"القصص","Al-Qasas",88,"مكية"],[29,"العنكبوت","Al-Ankabut",69,"مكية"],[30,"الروم","Ar-Rum",60,"مكية"],[31,"لقمان","Luqman",34,"مكية"],[32,"السجدة","As-Sajdah",30,"مكية"],[33,"الأحزاب","Al-Ahzab",73,"مدنية"],[34,"سبأ","Saba",54,"مكية"],[35,"فاطر","Fatir",45,"مكية"],[36,"يس","Ya-Sin",83,"مكية"],[37,"الصافات","As-Saffat",182,"مكية"],[38,"ص","Sad",88,"مكية"],[39,"الزمر","Az-Zumar",75,"مكية"],[40,"غافر","Ghafir",85,"مكية"],[41,"فصلت","Fussilat",54,"مكية"],[42,"الشورى","Ash-Shura",53,"مكية"],[43,"الزخرف","Az-Zukhruf",89,"مكية"],[44,"الدخان","Ad-Dukhan",59,"مكية"],[45,"الجاثية","Al-Jathiyah",37,"مكية"],[46,"الأحقاف","Al-Ahqaf",35,"مكية"],[47,"محمد","Muhammad",38,"مدنية"],[48,"الفتح","Al-Fath",29,"مدنية"],[49,"الحجرات","Al-Hujurat",18,"مدنية"],[50,"ق","Qaf",45,"مكية"],[51,"الذاريات","Adh-Dhariyat",60,"مكية"],[52,"الطور","At-Tur",49,"مكية"],[53,"النجم","An-Najm",62,"مكية"],[54,"القمر","Al-Qamar",55,"مكية"],[55,"الرحمن","Ar-Rahman",78,"مدنية"],[56,"الواقعة","Al-Waqi'ah",96,"مكية"],[57,"الحديد","Al-Hadid",29,"مدنية"],[58,"المجادلة","Al-Mujadilah",22,"مدنية"],[59,"الحشر","Al-Hashr",24,"مدنية"],[60,"الممتحنة","Al-Mumtahanah",13,"مدنية"],[61,"الصف","As-Saff",14,"مدنية"],[62,"الجمعة","Al-Jumu'ah",11,"مدنية"],[63,"المنافقون","Al-Munafiqun",11,"مدنية"],[64,"التغابن","At-Taghabun",18,"مدنية"],[65,"الطلاق","At-Talaq",12,"مدنية"],[66,"التحريم","At-Tahrim",12,"مدنية"],[67,"الملك","Al-Mulk",30,"مكية"],[68,"القلم","Al-Qalam",52,"مكية"],[69,"الحاقة","Al-Haqqah",52,"مكية"],[70,"المعارج","Al-Ma'arij",44,"مكية"],[71,"نوح","Nuh",28,"مكية"],[72,"الجن","Al-Jinn",28,"مكية"],[73,"المزمل","Al-Muzzammil",20,"مكية"],[74,"المدثر","Al-Muddaththir",56,"مكية"],[75,"القيامة","Al-Qiyamah",40,"مكية"],[76,"الإنسان","Al-Insan",31,"مدنية"],[77,"المرسلات","Al-Mursalat",50,"مكية"],[78,"النبأ","An-Naba",40,"مكية"],[79,"النازعات","An-Nazi'at",46,"مكية"],[80,"عبس","Abasa",42,"مكية"],[81,"التكوير","At-Takwir",29,"مكية"],[82,"الانفطار","Al-Infitar",19,"مكية"],[83,"المطففين","Al-Mutaffifin",36,"مكية"],[84,"الانشقاق","Al-Inshiqaq",25,"مكية"],[85,"البروج","Al-Buruj",22,"مكية"],[86,"الطارق","At-Tariq",17,"مكية"],[87,"الأعلى","Al-A'la",19,"مكية"],[88,"الغاشية","Al-Ghashiyah",26,"مكية"],[89,"الفجر","Al-Fajr",30,"مكية"],[90,"البلد","Al-Balad",20,"مكية"],[91,"الشمس","Ash-Shams",15,"مكية"],[92,"الليل","Al-Layl",21,"مكية"],[93,"الضحى","Ad-Duha",11,"مكية"],[94,"الشرح","Ash-Sharh",8,"مكية"],[95,"التين","At-Tin",8,"مكية"],[96,"العلق","Al-Alaq",19,"مكية"],[97,"القدر","Al-Qadr",5,"مكية"],[98,"البينة","Al-Bayyinah",8,"مدنية"],[99,"الزلزلة","Az-Zalzalah",8,"مدنية"],[100,"العاديات","Al-Adiyat",11,"مكية"],[101,"القارعة","Al-Qari'ah",11,"مكية"],[102,"التكاثر","At-Takathur",8,"مكية"],[103,"العصر","Al-Asr",3,"مكية"],[104,"الهمزة","Al-Humazah",9,"مكية"],[105,"الفيل","Al-Fil",5,"مكية"],[106,"قريش","Quraysh",4,"مكية"],[107,"الماعون","Al-Ma'un",7,"مكية"],[108,"الكوثر","Al-Kawthar",3,"مكية"],[109,"الكافرون","Al-Kafirun",6,"مكية"],[110,"النصر","An-Nasr",3,"مدنية"],[111,"المسد","Al-Masad",5,"مكية"],[112,"الإخلاص","Al-Ikhlas",4,"مكية"],[113,"الفلق","Al-Falaq",5,"مكية"],[114,"الناس","An-Nas",6,"مكية"]];
 const SURAHS = RAW.map(([number, nameAr, nameEn, ayahs, type]) => ({ number, nameAr, nameEn, ayahs, type }));
 const SURAH_MAP = new Map(SURAHS.map(s => [s.number, s]));
 
-const state = { current: null, playing: false, mode: "seq", queue: [], qIndex: -1, volume: CONFIG.defaultVolume, speed: CONFIG.defaultSpeed, shuffle: false, repeat: "off", search: "", lastPlayed: null, currentTime: 0, _prevVolume: CONFIG.defaultVolume, _restoredFromSaved: false, range: emptyRange(), sleep: { active: false, endsAt: 0 }, reciterId: 1, downloads: [], _downloadSelection: new Set(), timingIds: {} };
-const saveSoon = debounce(() => Store.save(state), CONFIG.saveDebounceMs);
+const state = { current: null, playing: false, mode: "seq", queue: [], qIndex: -1, volume: CONFIG.defaultVolume, speed: CONFIG.defaultSpeed, shuffle: false, repeat: "off", search: "", lastPlayed: null, currentTime: 0, _prevVolume: CONFIG.defaultVolume, _restoredFromSaved: false, _playIntent: false, _lastSavedTime: 0, _lastSavedSignature: "", _lastKnownDuration: 0, _tabVisible: !document.hidden, _loadedRid: null, _loadedSn: null, range: emptyRange(), sleep: { active: false, endsAt: 0 }, reciterId: 1, downloads: [], _downloadSelection: new Set(), timingIds: {} };
+
+let _saveDebounceTimer = null;
+function saveSoon() {
+  if (_saveDebounceTimer) clearTimeout(_saveDebounceTimer);
+  _saveDebounceTimer = setTimeout(() => { _saveDebounceTimer = null; Store.save(state); }, CONFIG.saveDebounceMs);
+}
 
 const Store = {
-  load() { try { const r = localStorage.getItem(CONFIG.storageKey); return r ? JSON.parse(r) : null; } catch(_) { return null; } },
-  save(s) { try { localStorage.setItem(CONFIG.storageKey, JSON.stringify({
-    v: 250, queue: s.queue, mode: s.mode, qIndex: s.qIndex, current: s.current,
-    currentTime: s.currentTime || 0, volume: s.volume, speed: s.speed,
-    shuffle: s.shuffle, repeat: s.repeat, lastPlayed: s.lastPlayed || null,
-    reciterId: s.reciterId || null,
-    range: s.range && s.range.active ? {
-      surah: s.range.surah, endSurah: s.range.endSurah,
-      crossSurah: !!s.range.crossSurah, phase: s.range.phase,
-      mode: s.range.mode, startAyah: s.range.startAyah, endAyah: s.range.endAyah,
-      startTime: s.range.startTime, endTime: s.range.endTime,
-      estimated: !!s.range.estimated, openEnded: !!s.range.openEnded,
-      repeatCount: s.range.repeatCount || 1, repeatIndex: s.range.repeatIndex || 0,
-      sameSurah: !!s.range.sameSurah
-    } : null,
-    sleep: s.sleep && s.sleep.active ? { endsAt: s.sleep.endsAt } : null,
-    savedAt: Date.now()
-  })); } catch(_){} },
+  load() { try { const r = lsSafeGet(CONFIG.storageKey); return r ? JSON.parse(r) : null; } catch(_) { return null; } },
+  save(s) {
+    try {
+      const sig = `${s.current}|${Math.floor((s.currentTime || 0) / 3)}|${s.queue.length}|${s.reciterId}|${s.volume}|${s.speed}|${s.repeat}|${s.shuffle}|${s.mode}|${s.range.active ? 1 : 0}|${s.sleep.active ? Math.floor(s.sleep.endsAt / 1000) : 0}`;
+      if (sig === s._lastSavedSignature) return;
+      s._lastSavedSignature = sig;
+      const payload = {
+        v: 313, queue: s.queue, mode: s.mode, qIndex: s.qIndex, current: s.current,
+        currentTime: s.currentTime || 0, volume: s.volume, speed: s.speed,
+        shuffle: s.shuffle, repeat: s.repeat, lastPlayed: s.lastPlayed || null,
+        reciterId: s.reciterId || null,
+        range: s.range && s.range.active ? { surah: s.range.surah, endSurah: s.range.endSurah, crossSurah: !!s.range.crossSurah, phase: s.range.phase, mode: s.range.mode, startAyah: s.range.startAyah, endAyah: s.range.endAyah, startTime: s.range.startTime, endTime: s.range.endTime, estimated: !!s.range.estimated, openEnded: !!s.range.openEnded, repeatCount: s.range.repeatCount || 1, repeatIndex: s.range.repeatIndex || 0, sameSurah: !!s.range.sameSurah } : null,
+        sleep: s.sleep && s.sleep.active ? { endsAt: s.sleep.endsAt } : null,
+        savedAt: Date.now()
+      };
+      lsSafeSet(CONFIG.storageKey, JSON.stringify(payload));
+    } catch(_){}
+  },
 };
 
 const els = {
@@ -158,6 +183,9 @@ const els = {
   storageBarFill: $("#storageBarFill"), storageUsed: $("#storageUsed"), storageAvail: $("#storageAvail"),
   storageCount: $("#storageCount"), storageReciters: $("#storageReciters"), storageTotal: $("#storageTotal"),
   storageClearAll: $("#storageClearAll"), storageCloseBtn: $("#storageCloseBtn"),
+  prefetchStatus: $("#prefetchStatus"), prefetchBarFill: $("#prefetchBarFill"),
+  prefetchText: $("#prefetchText"), prefetchPercent: $("#prefetchPercent"), prefetchFailed: $("#prefetchFailed"),
+  prefetchClear: $("#prefetchClear"),
   downloadBtn: $("#downloadBtn"), downloadOverlay: $("#downloadOverlay"), dlList: $("#dlList"), dlSelectAll: $("#dlSelectAll"),
   dlCountPill: $("#dlCountPill"), dlStartBtn: $("#dlStartBtn"), dlStartCount: $("#dlStartCount"), dlCloseBtn: $("#dlCloseBtn"), downloadReciterName: $("#downloadReciterName"),
   mobileMenuBtn: $("#mobileMenuBtn"), mobileSidebar: $("#mobileSidebar"), mobileOverlay: $("#mobileOverlay"), mobileSidebarClose: $("#mobileSidebarClose"),
@@ -182,6 +210,7 @@ const ICONS = {
   folder: `<path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>`,
   mic: `<path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>`,
   chevron: `<path d="M7 10l5 5 5-5z"/>`,
+  bolt: `<path d="M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z"/>`,
 };
 
 let toastTimer = 0;
@@ -189,72 +218,58 @@ function toast(msg, type = "info") { els.toastMsg.textContent = msg; els.toast.c
 
 const TimingsAPI = {
   cache: {}, sortedKeys: {}, noTimingFor: new Set(), _loadedFromDB: false,
+  _touchMap: new Map(),
   has(rid, surah) { return !!(this.cache[rid] && this.cache[rid][surah]); },
-  getFor(rid, surah) { const r = this.cache[rid]; return r ? (r[surah] || null) : null; },
+  getFor(rid, surah) { const r = this.cache[rid]; if (!r || !r[surah]) return null; this._touch(rid, surah); return r[surah]; },
   getKeysFor(rid, surah) { return (this.sortedKeys[rid] && this.sortedKeys[rid][surah]) || null; },
-  countCached(rid) { let n = 0; for (let i = 1; i <= 114; i++) if (this.has(rid, i)) n++; return n; },
-  countAllCached() { let t = 0; for (const r of CONFIG.reciters) t += this.countCached(r.id); return t; },
-  totalPossible() { return CONFIG.reciters.length * 114; },
-  isDisabled(rid) { return this.noTimingFor.has(rid); },
-  async loadAllFromIDB() {
-    if (this._loadedFromDB) return;
-    try {
-      const all = await IDB.getAllTimings();
-      for (const rec of all) {
-        const rid = rec.reciterId, surah = rec.surah;
-        if (!this.cache[rid]) this.cache[rid] = {};
-        if (!this.sortedKeys[rid]) this.sortedKeys[rid] = {};
-        this.cache[rid][surah] = rec.ayahs;
-        this.sortedKeys[rid][surah] = Object.keys(rec.ayahs).map(Number).sort((a, b) => a - b);
-      }
-      this._loadedFromDB = true;
-      console.log(`[TimingsAPI] Hydrated ${all.length}`);
-    } catch (e) { console.warn("TimingsAPI.loadAllFromIDB:", e); }
-  },
-  async fetch(rid, surahNumber, persist = false) {
-    if (this.has(rid, surahNumber)) {
-      /* ⭐ حتى لو محفوظ في الذاكرة → لازم نضمن إنه في IDB لو persist=true */
-      if (persist) {
-        try { await IDB.putTiming(rid, surahNumber, this.cache[rid][surahNumber]); } catch(_) {}
-      }
-      return this.cache[rid][surahNumber];
+  _touch(rid, sn) {
+    const k = `${rid}-${sn}`;
+    if (this._touchMap.has(k)) this._touchMap.delete(k);
+    this._touchMap.set(k, Date.now());
+    if (this._touchMap.size > CONFIG.TIMINGS_CACHE_MAX) {
+      const oldKey = this._touchMap.keys().next().value;
+      this._touchMap.delete(oldKey);
+      const [oldRid, oldSn] = oldKey.split("-").map(Number);
+      if (this.cache[oldRid]) delete this.cache[oldRid][oldSn];
+      if (this.sortedKeys[oldRid]) delete this.sortedKeys[oldRid][oldSn];
     }
-    const timingId = state.timingIds[rid];
-    if (!timingId) { this.noTimingFor.add(rid); return null; }
+  },
+  _store(rid, sn, ayahs) {
+    if (!this.cache[rid]) this.cache[rid] = {};
+    if (!this.sortedKeys[rid]) this.sortedKeys[rid] = {};
+    this.cache[rid][sn] = ayahs;
+    this.sortedKeys[rid][sn] = Object.keys(ayahs).map(Number).sort((a, b) => a - b);
+    this._touch(rid, sn);
+  },
+  isDisabled(rid) { return this.noTimingFor.has(rid); },
+  async loadAllFromIDB() { if (this._loadedFromDB) return; try { const all = await IDB.getAllTimings(); const sliced = all.slice(-CONFIG.TIMINGS_CACHE_MAX); for (const rec of sliced) { this._store(rec.reciterId, rec.surah, rec.ayahs); } this._loadedFromDB = true; } catch (e) { console.warn("TimingsAPI.loadAllFromIDB:", e); } },
+  async fetch(rid, surahNumber, persist = false) {
+    if (this.has(rid, surahNumber)) { this._touch(rid, surahNumber); return this.cache[rid][surahNumber]; }
+    try {
+      const rec = await IDB.getTiming(rid, surahNumber);
+      if (rec && rec.ayahs && Object.keys(rec.ayahs).length) {
+        this._store(rid, surahNumber, rec.ayahs);
+        return rec.ayahs;
+      }
+    } catch(_) {}
+    const timingId = state.timingIds[rid]; if (!timingId) { this.noTimingFor.add(rid); return null; }
     try {
       const url = `${CONFIG.apiBaseUrl}/ayat_timing?surah=${surahNumber}&read=${timingId}`;
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      const ayahs = {};
+      const res = await fetch(url, { cache: "no-store" }); if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json(); const ayahs = {};
       if (Array.isArray(data)) data.forEach(item => { if (typeof item.ayah === "number") ayahs[item.ayah] = { startTime: item.start_time / 1000, endTime: item.end_time / 1000 }; });
       if (!Object.keys(ayahs).length) throw new Error("empty");
-      if (surahNumber === 1) {
-        const ks = Object.keys(ayahs).map(Number).sort((a, b) => a - b);
-        if (ks.length === 7 && ks[0] === 0 && ks[6] === 6) { const remapped = {}; for (const k of ks) remapped[k + 1] = ayahs[k]; for (const k of ks) delete ayahs[k]; Object.assign(ayahs, remapped); }
-        const allValid = [1,2,3,4,5,6,7].every(i => ayahs[i] && ayahs[i].endTime > ayahs[i].startTime && ayahs[i].startTime >= 0);
-        if (!allValid) throw new Error("invalid fatihah");
-        for (let i = 1; i <= 6; i++) if (ayahs[i + 1] && ayahs[i + 1].startTime > ayahs[i].endTime) ayahs[i].endTime = ayahs[i + 1].startTime;
-      }
-      if (!this.cache[rid]) this.cache[rid] = {};
-      if (!this.sortedKeys[rid]) this.sortedKeys[rid] = {};
-      this.cache[rid][surahNumber] = ayahs;
-      this.sortedKeys[rid][surahNumber] = Object.keys(ayahs).map(Number).sort((a, b) => a - b);
+      if (surahNumber === 1) { const ks = Object.keys(ayahs).map(Number).sort((a, b) => a - b); if (ks.length === 7 && ks[0] === 0 && ks[6] === 6) { const remapped = {}; for (const k of ks) remapped[k + 1] = ayahs[k]; for (const k of ks) delete ayahs[k]; Object.assign(ayahs, remapped); } const allValid = [1,2,3,4,5,6,7].every(i => ayahs[i] && ayahs[i].endTime > ayahs[i].startTime && ayahs[i].startTime >= 0); if (!allValid) throw new Error("invalid fatihah"); for (let i = 1; i <= 6; i++) if (ayahs[i + 1] && ayahs[i + 1].startTime > ayahs[i].endTime) ayahs[i].endTime = ayahs[i + 1].startTime; }
+      this._store(rid, surahNumber, ayahs);
       if (persist) { try { await IDB.putTiming(rid, surahNumber, ayahs); } catch(_) {} }
       return ayahs;
     } catch (e) { console.warn(`Timings fetch failed [${rid} ${surahNumber}]:`, e); return null; }
   },
   async resolveTimingIds() {
-    const cached = localStorage.getItem("quran-timing-ids-v5");
+    const cached = lsSafeGet("quran-timing-ids-v5");
     if (cached) { try { const p = JSON.parse(cached); const now = Date.now(); if (p._t && now - p._t < 86400000 * 7) return p; } catch(_){} }
     const map = { _t: Date.now() };
-    try {
-      const res = await fetch(`${CONFIG.apiBaseUrl}/ayat_timing/reads`);
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const reads = await res.json();
-      for (const local of CONFIG.reciters) { const match = reads.find(r => r.name && local.timingKeys.some(k => r.name.includes(k))); map[local.id] = match ? match.id : null; }
-      try { localStorage.setItem("quran-timing-ids-v5", JSON.stringify(map)); } catch(_){}
-    } catch (e) { console.warn("resolveTimingIds failed:", e); Object.assign(map, { 1: 12, 2: 14, 3: 6, 4: 8, 5: 10, 6: 9 }); }
+    try { const res = await fetch(`${CONFIG.apiBaseUrl}/ayat_timing/reads`); if (!res.ok) throw new Error("HTTP " + res.status); const reads = await res.json(); for (const local of CONFIG.reciters) { const match = reads.find(r => r.name && local.timingKeys.some(k => r.name.includes(k))); map[local.id] = match ? match.id : null; } lsSafeSet("quran-timing-ids-v5", JSON.stringify(map)); } catch (e) { console.warn("resolveTimingIds failed:", e); Object.assign(map, { 1: 12, 2: 14, 3: 6, 4: 8, 5: 10, 6: 9 }); }
     return map;
   },
 };
@@ -262,32 +277,29 @@ const TimingsAPI = {
 const BISMILLAH_TEXT = "بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ";
 const BISMILLAH_REGEX = /^بِسْمِ\s+[ٱاأ]للَّهِ\s+[ٱاأ]لرَّحْم[َٰـ\u064B-\u0652]*نِ\s+[ٱاأ]لرَّحِيمِ\s+/u;
 const TextAPI = {
-  cache: {}, _loadedFromDB: false,
-  async loadAllFromIDB() { if (this._loadedFromDB) return; try { const all = await IDB.getAllTexts(); for (const rec of all) this.cache[rec.key] = rec.ayahs; this._loadedFromDB = true; console.log(`[TextAPI] Hydrated ${all.length}`); } catch (e) { console.warn("TextAPI.loadAllFromIDB:", e); } },
-    async fetch(surahNumber, persist = false) {
-    if (this.cache[surahNumber]) {
-      /* ⭐ نفس المنطق: ضمان الحفظ في IDB لو persist=true */
-      if (persist) {
-        try { await IDB.putText(surahNumber, this.cache[surahNumber]); } catch(_) {}
-      }
-      return this.cache[surahNumber];
-    }
-    try {
-      const res = await fetch(CONFIG.textApiBaseUrl.replace("{n}", surahNumber), { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const json = await res.json();
-      const data = json.data; if (!data || !Array.isArray(data.ayahs)) throw new Error("empty");
-      const ayahs = {};
-      if (surahNumber !== 1 && surahNumber !== 9) ayahs[0] = BISMILLAH_TEXT;
-      data.ayahs.forEach(a => { let text = a.text; if (a.numberInSurah === 1 && surahNumber !== 1 && surahNumber !== 9) { if (BISMILLAH_REGEX.test(text)) text = text.replace(BISMILLAH_REGEX, "").trim() || text; } ayahs[a.numberInSurah] = text; });
-      this.cache[surahNumber] = ayahs;
-      if (persist) { try { await IDB.putText(surahNumber, ayahs); } catch(_) {} }
-      return ayahs;
-    } catch (e) { return null; }
+  cache: createLRU(CONFIG.TEXTS_CACHE_MAX),
+  _loadedFromDB: false,
+  async loadAllFromIDB() { if (this._loadedFromDB) return; try { const all = await IDB.getAllTexts(); const sliced = all.slice(-CONFIG.TEXTS_CACHE_MAX); for (const rec of sliced) this.cache.set(rec.key, rec.ayahs); this._loadedFromDB = true; } catch (e) { console.warn("TextAPI.loadAllFromIDB:", e); } },
+  _parseText(sn, data) {
+    const ayahs = {};
+    if (sn !== 1 && sn !== 9) ayahs[0] = BISMILLAH_TEXT;
+    data.ayahs.forEach(a => { let text = a.text; if (a.numberInSurah === 1 && sn !== 1 && sn !== 9) { if (BISMILLAH_REGEX.test(text)) text = text.replace(BISMILLAH_REGEX, "").trim() || text; } ayahs[a.numberInSurah] = text; });
+    return ayahs;
   },
-  get(surah, ayah) { const s = this.cache[surah]; return s ? s[ayah] || null : null; },
-  has(surah) { return !!this.cache[surah]; },
-  countCached() { let n = 0; for (let i = 1; i <= 114; i++) if (this.has(i)) n++; return n; },
+  async fetch(surahNumber, persist = false) {
+    const cached = this.cache.get(surahNumber);
+    if (cached) return cached;
+    try {
+      const rec = await IDB.getText(surahNumber);
+      if (rec && rec.ayahs && Object.keys(rec.ayahs).length) {
+        this.cache.set(surahNumber, rec.ayahs);
+        return rec.ayahs;
+      }
+    } catch(_) {}
+    try { const res = await fetch(CONFIG.textApiBaseUrl.replace("{n}", surahNumber), { cache: "no-store" }); if (!res.ok) throw new Error("HTTP " + res.status); const json = await res.json(); const data = json.data; if (!data || !Array.isArray(data.ayahs)) throw new Error("empty"); const ayahs = this._parseText(surahNumber, data); this.cache.set(surahNumber, ayahs); if (persist) { try { await IDB.putText(surahNumber, ayahs); } catch(_) {} } return ayahs; } catch (e) { return null; }
+  },
+  get(surah, ayah) { const s = this.cache.get(surah); return s ? s[ayah] || null : null; },
+  has(surah) { return this.cache.has(surah); },
 };
 
 let _silentSwitch = false, _silentSwitchTimer = null, _audioLoadId = 0;
@@ -298,44 +310,426 @@ function getSurahUrl(rid, sn) { const r = RECITER_MAP.get(rid); return `${(r ? r
 function resolveSurahSrc(rid, sn) { const k = `${rid}-${sn}`; return _objectUrls.has(k) ? _objectUrls.get(k) : getSurahUrl(rid, sn); }
 function registerObjectUrl(rid, sn, blob) { const k = `${rid}-${sn}`; if (_objectUrls.has(k)) { try { URL.revokeObjectURL(_objectUrls.get(k)); } catch(_){} } const url = URL.createObjectURL(blob); _objectUrls.set(k, url); return url; }
 function unregisterObjectUrl(rid, sn) { const k = `${rid}-${sn}`; if (_objectUrls.has(k)) { try { URL.revokeObjectURL(_objectUrls.get(k)); } catch(_){} _objectUrls.delete(k); } }
-function stopAudio() { try { els.audio.pause(); els.audio.currentTime = 0; } catch(_){} }
-function prepareAudioSource(num, seek) {
-  _audioLoadId++;
-  const myId = _audioLoadId;
-  stopAudio();
-  state.current = num;
-  state.currentTime = seek || 0;
-  try { els.audio.src = resolveSurahSrc(state.reciterId, num); els.audio.playbackRate = state.speed; els.audio.volume = state.volume; els.audio.muted = state.volume === 0; els.audio.load(); } catch(_){}
-  return myId;
-}
+function pauseAudio() { try { els.audio.pause(); } catch(_){} }
+function setLoadedSource(rid, sn) { state._loadedRid = rid; state._loadedSn = sn; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ⭐ Prefetcher v31 — يحمّل كل timings + texts مرة واحدة في الخلفية
+   ═══════════════════════════════════════════════════════════════════════ */
+const Prefetcher = {
+  _running: false,
+  _aborted: false,
+  _paused: false,
+  _progress: { done: 0, total: 798, failed: 0, phase: "idle" },
+  _onProgress: null,
+
+  setProgressCallback(fn) { this._onProgress = fn; },
+  _emit() { if (this._onProgress) try { this._onProgress(this._progress); } catch(_){} },
+
+  _saveState() {
+    lsSafeSet(CONFIG.PREFETCH_LS_KEY, JSON.stringify({
+      progress: this._progress,
+      paused: this._paused,
+      running: this._running,
+      ts: Date.now()
+    }));
+  },
+  _clearState() { lsSafeRemove(CONFIG.PREFETCH_LS_KEY); },
+
+  async isComplete() {
+    try {
+      const tk = await IDB.getAllTimingKeys();
+      const xk = await IDB.getAllTextKeys();
+      return tk.length >= CONFIG.reciters.length * 114 && xk.length >= 114;
+    } catch(_) { return false; }
+  },
+
+  status() { return this._progress; },
+
+  async run() {
+    console.log('[Prefetcher] run() called | running:', this._running, '| online:', navigator.onLine);
+    if (this._running) return;
+    if (!navigator.onLine) {
+      this._paused = true;
+      this._progress.phase = "paused";
+      this._emit();
+      this._saveState();
+      return;
+    }
+    this._running = true;
+    this._aborted = false;
+    this._paused = false;
+
+    try {
+      const existingT = new Set(await IDB.getAllTimingKeys());
+      const existingX = new Set((await IDB.getAllTextKeys()).map(String));
+
+      const tasks = [];
+      for (const rec of CONFIG.reciters) {
+        for (let sn = 1; sn <= 114; sn++) {
+          const k = `${rec.id}-${sn}`;
+          if (!existingT.has(k)) tasks.push({ type: "timing", rid: rec.id, sn });
+        }
+      }
+      for (let sn = 1; sn <= 114; sn++) {
+        if (!existingX.has(String(sn))) tasks.push({ type: "text", sn });
+      }
+
+      const totalAll = CONFIG.reciters.length * 114 + 114;
+      this._progress.total = totalAll;
+      this._progress.done = existingT.size + existingX.size;
+      this._progress.failed = 0;
+      this._progress.phase = "running";
+      this._emit();
+      this._saveState();
+
+      if (!tasks.length) {
+        this._progress.phase = "complete";
+        this._progress.done = totalAll;
+        this._emit();
+        this._clearState();
+        this._running = false;
+        return;
+      }
+
+      let idx = 0;
+      const worker = async () => {
+        while (idx < tasks.length) {
+          if (this._aborted || this._paused) return;
+          if (!navigator.onLine) { this._paused = true; return; }
+          const i = idx++;
+          const task = tasks[i];
+          const ok = await this._processTask(task);
+          if (!ok) this._progress.failed++;
+          this._progress.done++;
+          this._emit();
+          if (i % 5 === 0) this._saveState();
+          await new Promise(r => setTimeout(r, CONFIG.PREFETCH_DELAY_MS));
+        }
+      };
+
+      await Promise.all(Array.from({ length: CONFIG.PREFETCH_CONCURRENCY }, () => worker()));
+
+      if (this._aborted) {
+        this._progress.phase = "aborted";
+        this._emit();
+        this._running = false;
+        return;
+      }
+      if (this._paused) {
+        this._progress.phase = "paused";
+        this._emit();
+        this._saveState();
+        this._running = false;
+        return;
+      }
+      this._progress.phase = "complete";
+      this._progress.done = totalAll;
+      this._emit();
+      this._clearState();
+      this._running = false;
+      toast("✅ اكتمل تحميل توقيتات الآيات", "success");
+    } catch (e) {
+      console.warn("[Prefetcher] error:", e);
+      this._running = false;
+      this._progress.phase = "error";
+      this._emit();
+    }
+  },
+
+  async _processTask(task) {
+    for (let attempt = 1; attempt <= CONFIG.PREFETCH_RETRY_MAX; attempt++) {
+      if (this._aborted || this._paused) return true;
+      if (!navigator.onLine) return false;
+      try {
+        if (task.type === "timing") await this._fetchTiming(task.rid, task.sn);
+        else await this._fetchText(task.sn);
+        return true;
+      } catch (e) {
+        if (attempt >= CONFIG.PREFETCH_RETRY_MAX) return false;
+        await new Promise(r => setTimeout(r, 500 * attempt));
+      }
+    }
+    return false;
+  },
+
+  async _fetchTiming(rid, sn) {
+    const timingId = state.timingIds[rid];
+    if (!timingId) return;
+    const url = `${CONFIG.apiBaseUrl}/ayat_timing?surah=${sn}&read=${timingId}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const ayahs = {};
+    if (Array.isArray(data)) data.forEach(item => { if (typeof item.ayah === "number") ayahs[item.ayah] = { startTime: item.start_time / 1000, endTime: item.end_time / 1000 }; });
+    if (!Object.keys(ayahs).length) throw new Error("empty");
+    if (sn === 1) {
+      const ks = Object.keys(ayahs).map(Number).sort((a, b) => a - b);
+      if (ks.length === 7 && ks[0] === 0 && ks[6] === 6) {
+        const remapped = {};
+        for (const k of ks) remapped[k + 1] = ayahs[k];
+        for (const k of ks) delete ayahs[k];
+        Object.assign(ayahs, remapped);
+      }
+    }
+    await IDB.putTiming(rid, sn, ayahs);
+    TimingsAPI._store(rid, sn, ayahs);
+  },
+
+  async _fetchText(sn) {
+    const url = CONFIG.textApiBaseUrl.replace("{n}", sn);
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const json = await res.json();
+    const data = json.data;
+    if (!data || !Array.isArray(data.ayahs)) throw new Error("empty");
+    const ayahs = TextAPI._parseText(sn, data);
+    await IDB.putText(sn, ayahs);
+    TextAPI.cache.set(sn, ayahs);
+  },
+
+  pause() {
+    if (!this._running) return;
+    this._paused = true;
+    this._progress.phase = "paused";
+    this._emit();
+    this._saveState();
+  },
+  resume() {
+    if (this._running) return;
+    this._paused = false;
+    this.run();
+  },
+  abort() {
+    this._aborted = true;
+    this._running = false;
+    this._progress.phase = "aborted";
+    this._emit();
+    this._clearState();
+  },
+  async clearAll() {
+    this.abort();
+    try {
+      await IDB.clearTimings();
+      await IDB.clearTexts();
+      TimingsAPI.cache = {}; TimingsAPI.sortedKeys = {}; TimingsAPI._touchMap.clear();
+      TextAPI.cache.clear();
+      this._progress = { done: 0, total: 798, failed: 0, phase: "idle" };
+      this._clearState();
+      this._emit();
+      toast("تم مسح التوقيتات والنصوص", "success");
+    } catch(_) {}
+  }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ⭐ OfflineResume v31.3 — بدون polling — online event + visibilitychange
+   ═══════════════════════════════════════════════════════════════════════ */
+const OfflineResume = {
+  _restoring: false,
+  _retryTimer: null,
+  _retryAttempt: 0,
+  _currentData: null,
+
+  _ayahFromTime(rid, sn, time) {
+    try {
+      if (!TimingsAPI.has(rid, sn)) return null;
+      const result = Subtitle.findCurrentAyah(rid, sn, time);
+      return (result != null && result > 0) ? result : null;
+    } catch(_) { return null; }
+  },
+
+  _read() {
+    try {
+      const raw = lsSafeGet(CONFIG.OFFLINE_RESUME_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data.ts || Date.now() - data.ts > CONFIG.OFFLINE_RESUME_MAX_AGE) {
+        this.clear();
+        return null;
+      }
+      return data;
+    } catch(_) { return null; }
+  },
+
+  _write(data) {
+    try { lsSafeSet(CONFIG.OFFLINE_RESUME_KEY, JSON.stringify(data)); } catch(_){}
+  },
+
+  save(reason) {
+    if (!state.current) return;
+    const time = els.audio.currentTime || state.currentTime || 0;
+    const ayah = this._ayahFromTime(state.reciterId, state.current, time);
+    const data = { rid: state.reciterId, sn: state.current, ayah, time, wasPlaying: !!state._playIntent, ts: Date.now(), reason };
+    this._currentData = data;
+    this._write(data);
+  },
+
+  updateSeek(time) {
+    if (!state.current) return;
+    const ayah = this._ayahFromTime(state.reciterId, state.current, time);
+    const existing = this._currentData || this._read() || {};
+    const data = { rid: state.reciterId, sn: state.current, ayah: ayah != null ? ayah : existing.ayah, time, wasPlaying: !!state._playIntent, ts: Date.now(), reason: "seek" };
+    this._currentData = data;
+    this._write(data);
+  },
+
+  updateReciter(newRid, newTime) {
+    if (!state.current) return;
+    const ayah = this._ayahFromTime(newRid, state.current, newTime);
+    const data = { rid: newRid, sn: state.current, ayah, time: newTime, wasPlaying: !!state._playIntent, ts: Date.now(), reason: "reciter" };
+    this._currentData = data;
+    this._write(data);
+  },
+
+  updatePlayState(wasPlaying) {
+    const data = this._currentData || this._read();
+    if (!data) return;
+    data.wasPlaying = !!wasPlaying;
+    data.ts = Date.now();
+    this._currentData = data;
+    this._write(data);
+  },
+
+  clear() {
+    this._currentData = null;
+    lsSafeRemove(CONFIG.OFFLINE_RESUME_KEY);
+    if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
+    this._retryAttempt = 0;
+    this._restoring = false;
+  },
+
+  async restore(trigger) {
+    if (this._restoring) return;
+    const data = this._read();
+    if (!data) return;
+    if (!state.current || state.current !== data.sn) { this.clear(); return; }
+    if (state.reciterId !== data.rid) { this.clear(); return; }
+    if (!navigator.onLine) return;
+
+    this._restoring = true;
+    this._retryAttempt = 0;
+    this._currentData = data;
+    await this._attemptRestore(data);
+  },
+
+  async _attemptRestore(data) {
+    if (!TimingsAPI.has(data.rid, data.sn) && !TimingsAPI.isDisabled(data.rid)) {
+      try { await TimingsAPI.fetch(data.rid, data.sn); } catch(_){}
+    }
+
+    let targetTime = data.time || 0;
+    let precise = false;
+    if (data.ayah != null) {
+      const t = TimingsAPI.getFor(data.rid, data.sn);
+      if (t && t[data.ayah]) { targetTime = t[data.ayah].startTime; precise = true; }
+    }
+
+    try {
+      els.audio.pause();
+      els.audio.removeAttribute('src');
+      els.audio.load();
+    } catch(_) {}
+
+    await new Promise(r => setTimeout(r, 60));
+
+    markSilentSwitch();
+    setLoadedSource(data.rid, data.sn);
+    try {
+      els.audio.src = resolveSurahSrc(data.rid, data.sn);
+      els.audio.load();
+    } catch(_) { this._scheduleRetry(data); return; }
+
+    const canPlayOk = await new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => { if (done) return; done = true; els.audio.removeEventListener('canplay', onCanPlay); els.audio.removeEventListener('error', onErr); clearTimeout(tmo); resolve(ok); };
+      const onCanPlay = () => finish(true);
+      const onErr = () => finish(false);
+      els.audio.addEventListener('canplay', onCanPlay);
+      els.audio.addEventListener('error', onErr);
+      const tmo = setTimeout(() => finish(false), 10000);
+    });
+
+    if (!canPlayOk) { this._scheduleRetry(data); return; }
+
+    try { els.audio.currentTime = targetTime; state.currentTime = targetTime; } catch(_) {}
+
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; els.audio.removeEventListener('seeked', onSeeked); clearTimeout(tmo); resolve(); };
+      const onSeeked = () => finish();
+      els.audio.addEventListener('seeked', onSeeked);
+      const tmo = setTimeout(finish, 2500);
+    });
+
+    if (data.wasPlaying) {
+      state._playIntent = true;
+      const p = els.audio.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+
+    UI.progress();
+    Subtitle.currentKey = null;
+    Subtitle.update();
+    clearSilentSwitch();
+
+    this.clear();
+
+    if (precise) toast(`▶ عاد الاتصال — الآية ${data.ayah}`, "success");
+    else toast("▶ عاد الاتصال", "success");
+  },
+
+  _scheduleRetry(data) {
+    if (this._retryTimer) clearTimeout(this._retryTimer);
+    if (!navigator.onLine) { this._restoring = false; return; }
+    this._retryAttempt++;
+    if (this._retryAttempt > CONFIG.OFFLINE_MAX_RETRIES) { this._restoring = false; return; }
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null;
+      if (!navigator.onLine) { this._restoring = false; return; }
+      this._attemptRestore(data);
+    }, CONFIG.OFFLINE_RETRY_DELAY_MS);
+  }
+};
 
 const Subtitle = {
-  currentKey: null, _pendingFetches: {}, _failedFetches: new Set(), _changingTimer: null,
-  findCurrentAyah(rid, surahNum, t) {
-    const timings = TimingsAPI.getFor(rid, surahNum);
-    const keys = TimingsAPI.getKeysFor(rid, surahNum);
-    if (timings && keys && keys.length) {
-      let lo = 0, hi = keys.length - 1;
-      while (lo <= hi) { const mid = (lo + hi) >> 1; const k = keys[mid]; const a = timings[k]; if (t < a.startTime) hi = mid - 1; else if (t >= a.endTime) lo = mid + 1; else return k; }
-      if (lo < keys.length) { const k = keys[lo]; if (t < timings[k].startTime) return lo > 0 ? keys[lo - 1] : keys[0]; return k; }
-      return keys[keys.length - 1];
+  currentKey: null, _pendingFetches: {}, _failedMap: new Map(), _changingTimer: null, _lastUpdateTs: 0,
+  _markFailed(fk) {
+    if (this._failedMap.has(fk)) this._failedMap.delete(fk);
+    this._failedMap.set(fk, Date.now());
+    if (this._failedMap.size > CONFIG.FAILED_FETCHES_MAX) {
+      const old = this._failedMap.keys().next().value;
+      this._failedMap.delete(old);
     }
+  },
+  findCurrentAyah(rid, surahNum, t) {
+    const timings = TimingsAPI.getFor(rid, surahNum); const keys = TimingsAPI.getKeysFor(rid, surahNum);
+    if (timings && keys && keys.length) { let lo = 0, hi = keys.length - 1; while (lo <= hi) { const mid = (lo + hi) >> 1; const k = keys[mid]; const a = timings[k]; if (t < a.startTime) hi = mid - 1; else if (t >= a.endTime) lo = mid + 1; else return k; } if (lo < keys.length) { const k = keys[lo]; if (t < timings[k].startTime) return lo > 0 ? keys[lo - 1] : keys[0]; return k; } return keys[keys.length - 1]; }
     if (surahNum === 1) { const est = getFatihahEstimated(els.audio.duration); if (!est) return null; for (let i = 1; i <= 7; i++) if (t >= est[i].startTime && t < est[i].endTime) return i; return 7; }
     return null;
   },
   update() {
+    const now = performance.now();
+    if (now - this._lastUpdateTs < CONFIG.SUBTITLE_THROTTLE_MS) return;
+    this._lastUpdateTs = now;
+
     if (!state.current) { this.hide(); return; }
     const surah = state.current;
     const fk = `${state.reciterId}-${surah}`;
     const hasTimings = TimingsAPI.has(state.reciterId, surah);
     const isDisabled = TimingsAPI.isDisabled(state.reciterId);
-    const isFailed = this._failedFetches.has(fk);
+    const isFailed = this._failedMap.has(fk);
     const isPending = this._pendingFetches[fk];
     if (!hasTimings && !isDisabled && !isFailed && !isPending) {
       this._pendingFetches[fk] = true;
-      TimingsAPI.fetch(state.reciterId, surah).then((data) => { delete this._pendingFetches[fk]; if (!data) this._failedFetches.add(fk); UI._markerRenderKey = null; UI.renderAyahMarkers(); this.currentKey = null; this.update(); }).catch(() => { delete this._pendingFetches[fk]; this._failedFetches.add(fk); });
+      TimingsAPI.fetch(state.reciterId, surah).then((data) => {
+        delete this._pendingFetches[fk];
+        if (!data && navigator.onLine) this._markFailed(fk);
+        UI._markerRenderKey = null; UI.renderAyahMarkers(); this.currentKey = null; this.update();
+      }).catch(() => { delete this._pendingFetches[fk]; if (navigator.onLine) this._markFailed(fk); });
     }
-    const t = els.audio.currentTime || 0;
+    const audioHealthy = !els.audio.error && els.audio.readyState >= 2;
+    const t = audioHealthy ? (els.audio.currentTime || 0) : (state.currentTime || 0);
     const curAyah = this.findCurrentAyah(state.reciterId, surah, t);
     if (curAyah === null) { this.hide(); return; }
     els.subtitleStrip.classList.add("on");
@@ -343,26 +737,34 @@ const Subtitle = {
     UI.highlightMarker(curAyah);
   },
   render(surahNum, ayahNum) {
-    const key = `${surahNum}:${ayahNum}`;
-    if (this.currentKey === key) return false;
+    const key = `${surahNum}:${ayahNum}`; if (this.currentKey === key) return false;
     this.currentKey = key;
     const s = SURAH_MAP.get(surahNum); if (!s) return false;
     els.subSurahName.textContent = s.nameAr;
     els.subAyahNum.textContent = ayahNum === 0 ? "البسملة" : `${ayahNum} / ${s.ayahs}`;
     const text = TextAPI.get(surahNum, ayahNum);
     if (text) this.setText(text, false);
-    else {
-      this.setText("﴿ جاري تحميل النص... ﴾", true);
-      const fk = `text-${surahNum}`;
-      if (!this._pendingFetches[fk]) { this._pendingFetches[fk] = true; TextAPI.fetch(surahNum).then(() => { delete this._pendingFetches[fk]; if (this.currentKey === key) { const tx = TextAPI.get(surahNum, ayahNum); if (tx) this.setText(tx, false); } }).catch(() => { delete this._pendingFetches[fk]; if (this.currentKey === key) this.setText("﴿ تعذّر تحميل النص ﴾", true); }); }
-    }
+    else { this.setText("﴿ جاري تحميل النص... ﴾", true); const fk = `text-${surahNum}`; if (!this._pendingFetches[fk]) { this._pendingFetches[fk] = true; TextAPI.fetch(surahNum).then(() => { delete this._pendingFetches[fk]; if (this.currentKey === key) { const tx = TextAPI.get(surahNum, ayahNum); if (tx) this.setText(tx, false); } }).catch(() => { delete this._pendingFetches[fk]; if (this.currentKey === key) this.setText("﴿ تعذّر تحميل النص ﴾", true); }); } }
     if (this._changingTimer) clearTimeout(this._changingTimer);
     els.subtitleStrip.classList.add("changing");
     this._changingTimer = setTimeout(() => els.subtitleStrip.classList.remove("changing"), 550);
     return true;
   },
   setText(text, isLoading) { els.subAyahText.textContent = text; els.subAyahText.classList.toggle("loading", !!isLoading); },
-  onPlay() { this.update(); if (state.current && !TextAPI.has(state.current)) TextAPI.fetch(state.current).catch(() => {}); },
+  onPlay() {
+    this.currentKey = null;
+    this._lastUpdateTs = 0;
+    this.update();
+    if (state.current && !TextAPI.has(state.current)) TextAPI.fetch(state.current).catch(() => {});
+    if (state.current && !TimingsAPI.has(state.reciterId, state.current) && !TimingsAPI.isDisabled(state.reciterId)) {
+      const fk = `${state.reciterId}-${state.current}`;
+      this._failedMap.delete(fk);
+      TimingsAPI.fetch(state.reciterId, state.current).then(() => {
+        UI._markerRenderKey = null; UI.renderAyahMarkers();
+        this.currentKey = null; this.update();
+      }).catch(() => {});
+    }
+  },
   hide() { els.subtitleStrip.classList.remove("on"); this.currentKey = null; },
 };
 
@@ -377,24 +779,8 @@ const UI = {
     els.grid.appendChild(frag);
     $$(".card", els.grid).forEach(el => cardEls.set(+el.dataset.num, el));
   },
-  /* ⭐ البحث الجديد: عربي/إنجليزي + أرقام عربية/إنجليزية */
-  filter() {
-    const raw = (state.search || "").trim();
-    if (!raw) { cardEls.forEach(el => { el.style.display = ""; }); return; }
-    const q = raw.toLowerCase();
-    const qNum = arabicToEnglish(raw).toLowerCase();
-    const isNum = /^\d+$/.test(qNum);
-    const qInt = isNum ? parseInt(qNum, 10) : NaN;
-    cardEls.forEach((el, num) => {
-      const s = SURAH_MAP.get(num);
-      const match =
-        (s.nameAr || "").toLowerCase().includes(q) ||
-        (s.nameEn || "").toLowerCase().includes(q) ||
-        (isNum && qInt === num);
-      el.style.display = match ? "" : "none";
-    });
-  },
-  updatePlayingCard() { if (lastPlayingCard) lastPlayingCard.classList.remove("playing", "audio-active"); if (state.current) { const el = cardEls.get(state.current); if (el) { el.classList.add("playing"); if (state.playing) el.classList.add("audio-active"); lastPlayingCard = el; } } else lastPlayingCard = null; },
+  filter() { const raw = (state.search || "").trim(); if (!raw) { cardEls.forEach(el => { el.style.display = ""; }); return; } const q = raw.toLowerCase(); const qNum = arabicToEnglish(raw).toLowerCase(); const isNum = /^\d+$/.test(qNum); const qInt = isNum ? parseInt(qNum, 10) : NaN; cardEls.forEach((el, num) => { const s = SURAH_MAP.get(num); const match = (s.nameAr || "").toLowerCase().includes(q) || (s.nameEn || "").toLowerCase().includes(q) || (isNum && qInt === num); el.style.display = match ? "" : "none"; }); },
+  updatePlayingCard() { if (lastPlayingCard) lastPlayingCard.classList.remove("playing", "audio-active"); if (!state.current) { lastPlayingCard = null; return; } const el = cardEls.get(state.current); if (el) { el.classList.add("playing"); if (state.playing) el.classList.add("audio-active"); lastPlayingCard = el; } },
   updateResumeCard() { cardEls.forEach(el => { el.classList.remove("resume-card"); const b = el.querySelector("[data-resume-badge]"); if (b) b.style.display = "none"; }); if (state._restoredFromSaved && state.current) { const el = cardEls.get(state.current); if (el) { el.classList.add("resume-card"); const b = el.querySelector("[data-resume-badge]"); if (b && state.currentTime > 1) b.style.display = ""; } } },
   updateAddedButtons() { const q = new Set(state.queue); cardEls.forEach((el, num) => { const btn = el.querySelector('[data-act="add"]'); if (!btn) return; const isIn = q.has(num); btn.classList.toggle("added", isIn); const svg = btn.querySelector("svg"); if (svg) svg.innerHTML = isIn ? ICONS.minus : ICONS.plus; }); },
   updateRangeBadges() { cardEls.forEach((el, num) => { const b = el.querySelector("[data-range-badge]"); const rb = el.querySelector("[data-repeat-badge]"); if (!b) return; let show = false; if (state.range.active) { if (state.range.crossSurah) show = (num === state.range.surah || num === state.range.endSurah); else show = (num === state.range.surah); } b.style.display = show ? "" : "none"; if (rb) { const sr = show && (state.range.repeatCount || 1) > 1; rb.style.display = sr ? "" : "none"; if (sr) rb.textContent = `🔁 ×${state.range.repeatCount}`; } }); els.rangeBtn.classList.toggle("active", state.range.active); },
@@ -425,23 +811,22 @@ const UI = {
     els.playBtn.disabled = !state.current;
   },
   progress() {
-    const cur = els.audio.currentTime || 0; const total = els.audio.duration;
-    const has = isFinite(total) && total > 0; const ratio = has ? cur / total : 0;
+    const hasAudio = isFinite(els.audio.duration) && els.audio.duration > 0;
+    const dur = hasAudio ? els.audio.duration : (state._lastKnownDuration || 0);
+    const cur = hasAudio ? (els.audio.currentTime || 0) : (state.currentTime || 0);
+    const ratio = dur > 0 ? cur / dur : 0;
     els.seekFill.style.transform = `scaleX(${ratio})`;
     els.seekThumb.style.left = (ratio * 100).toFixed(3) + "%";
-    els.timeCur.textContent = fmtTime(cur); if (has) els.timeTotal.textContent = fmtTime(total);
-    if (has) els.seek.setAttribute("aria-valuenow", Math.round(ratio * 100));
-    if (els.audio.buffered.length && has) { const end = els.audio.buffered.end(els.audio.buffered.length - 1); els.seekBuffer.style.width = ((end / total) * 100).toFixed(2) + "%"; }
+    els.timeCur.textContent = fmtTime(cur); if (dur > 0) els.timeTotal.textContent = fmtTime(dur);
+    if (dur > 0) els.seek.setAttribute("aria-valuenow", Math.round(ratio * 100));
+    if (els.audio.buffered.length && hasAudio) { const end = els.audio.buffered.end(els.audio.buffered.length - 1); els.seekBuffer.style.width = ((end / dur) * 100).toFixed(2) + "%"; }
   },
   renderAyahMarkers() {
     if (!state.current) return this._clearMarkers();
-    const dur = els.audio.duration;
-    if (!isFinite(dur) || dur <= 0) return this._clearMarkers();
-    const key = `${state.reciterId}-${state.current}-${Math.round(dur)}`;
-    if (this._markerRenderKey === key) return;
+    const dur = els.audio.duration; if (!isFinite(dur) || dur <= 0) return this._clearMarkers();
+    const key = `${state.reciterId}-${state.current}-${Math.round(dur)}`; if (this._markerRenderKey === key) return;
     this._markerRenderKey = key;
-    let timings = TimingsAPI.getFor(state.reciterId, state.current);
-    let keys = TimingsAPI.getKeysFor(state.reciterId, state.current);
+    let timings = TimingsAPI.getFor(state.reciterId, state.current); let keys = TimingsAPI.getKeysFor(state.reciterId, state.current);
     if ((!timings || !keys) && state.current === 1) { timings = getFatihahEstimated(dur); keys = [1, 2, 3, 4, 5, 6, 7]; }
     if (!timings || !keys || keys.length < 2) return this._clearMarkers();
     els.seekAyahMarkers.innerHTML = ""; this._markerNodes.clear(); this._currentMarkerNode = null; this._lastHighlightAyah = null;
@@ -450,14 +835,7 @@ const UI = {
     els.seekAyahMarkers.appendChild(frag);
   },
   _clearMarkers() { els.seekAyahMarkers.innerHTML = ""; this._markerNodes.clear(); this._currentMarkerNode = null; this._lastHighlightAyah = null; this._markerRenderKey = null; },
-  highlightMarker(ayahNum) {
-    if (this._lastHighlightAyah === ayahNum) return;
-    this._lastHighlightAyah = ayahNum;
-    if (this._currentMarkerNode) { this._currentMarkerNode.classList.remove("current"); this._currentMarkerNode = null; }
-    if (ayahNum == null) return;
-    const node = this._markerNodes.get(ayahNum);
-    if (node) { node.classList.add("current"); this._currentMarkerNode = node; }
-  },
+  highlightMarker(ayahNum) { if (this._lastHighlightAyah === ayahNum) return; this._lastHighlightAyah = ayahNum; if (this._currentMarkerNode) { this._currentMarkerNode.classList.remove("current"); this._currentMarkerNode = null; } if (ayahNum == null) return; const node = this._markerNodes.get(ayahNum); if (node) { node.classList.add("current"); this._currentMarkerNode = node; } },
   rangeMarkers() {
     const total = els.audio.duration; const has = isFinite(total) && total > 0;
     if (!has) { els.seekMarkerStart.classList.remove("on"); els.seekMarkerEnd.classList.remove("on"); els.seekRangeFill.classList.remove("on"); return; }
@@ -477,18 +855,10 @@ const UI = {
   shuffle() { els.shuffleBtn.classList.toggle("on", state.shuffle); },
   repeat() { els.repeatBtn.classList.toggle("on", state.repeat !== "off"); },
   timerChip() { if (state.sleep.active) { const r = Math.max(0, state.sleep.endsAt - Date.now()); els.timerChip.textContent = fmtTime(r / 1000); els.timerChip.classList.add("on"); els.sleepBtn.classList.add("active"); } else { els.timerChip.classList.remove("on"); els.sleepBtn.classList.remove("active"); } },
-  updateMobileValues() {
-    if (!els.msReciterName) return;
-    els.msReciterName.textContent = (RECITER_MAP.get(state.reciterId) || {}).name || "—";
-    els.msQueueCount.textContent = state.queue.length;
-    els.msStorageCount.textContent = state.downloads.filter(d => d.reciterId === state.reciterId).length;
-    els.msSleepValue.textContent = state.sleep.active ? fmtTime(Math.max(0, state.sleep.endsAt - Date.now()) / 1000) : "—";
-  },
+  updateMobileValues() { if (!els.msReciterName) return; els.msReciterName.textContent = (RECITER_MAP.get(state.reciterId) || {}).name || "—"; els.msQueueCount.textContent = state.queue.length; els.msStorageCount.textContent = state.downloads.filter(d => d.reciterId === state.reciterId).length; els.msSleepValue.textContent = state.sleep.active ? fmtTime(Math.max(0, state.sleep.endsAt - Date.now()) / 1000) : "—"; },
   phaseNotice() {
     const isL2 = state.range.active && state.range.crossSurah && state.range.phase === "leg2";
-    const rc = state.range.repeatCount || 1;
-    const hasR = state.range.active && rc > 1;
-    const isSame = state.range.active && state.range.sameSurah;
+    const rc = state.range.repeatCount || 1; const hasR = state.range.active && rc > 1; const isSame = state.range.active && state.range.sameSurah;
     if (isL2) { const ss = SURAH_MAP.get(state.range.surah); let h = `أنت الآن في <b>المرحلة 2 من 2</b> — تشغيل سورة ${SURAH_MAP.get(state.range.endSurah).nameAr}. عند تطبيق نطاق جديد، سيبدأ من ${ss.nameAr} (الآية ${state.range.startAyah}).`; if (hasR) h += ` <br>🔁 التشغيل <b>${(state.range.repeatIndex || 0) + 1} من ${rc}</b>`; els.phaseNoticeText.innerHTML = h; els.phaseNotice.classList.add("on"); els.phaseNotice.classList.toggle("repeat-active", hasR); }
     else if (isSame) { let h = `🔁 تشغيل <b>سورة ${SURAH_MAP.get(state.range.surah).nameAr}</b> كاملة`; if (hasR) h += ` — <b>${(state.range.repeatIndex || 0) + 1} من ${rc}</b>`; els.phaseNoticeText.innerHTML = h; els.phaseNotice.classList.add("on"); els.phaseNotice.classList.toggle("repeat-active", hasR); }
     else if (hasR) { els.phaseNoticeText.innerHTML = `🔁 النطاق مُشغَّل <b>${rc} مرات</b> — الإنجاز: <b>${(state.range.repeatIndex || 0) + 1}</b> من ${rc}`; els.phaseNotice.classList.add("on", "repeat-active"); }
@@ -498,21 +868,75 @@ const UI = {
   reciterName(name) { els.reciterNameLabel.textContent = name || "اختر قارئ"; els.brandReciterName.textContent = name ? `الشيخ ${name}` : "اختر قارئ"; els.downloadReciterName.textContent = name ? `— ${name}` : ""; if (els.msReciterName) els.msReciterName.textContent = name || "—"; },
 };
 
+/* ═══ RAF loop ═══ */
+let _rafId = null;
+let _lastSaveCheckTs = 0;
+function _rafTick(ts) {
+  if (!state.playing || !state._tabVisible) { _rafId = null; return; }
+  UI.progress();
+  if (state.range.active && !state.range.openEnded && state.current === state.range.surah) {
+    if (els.audio.currentTime >= state.range.endTime) {
+      try { els.audio.pause(); } catch(_){}
+      try { els.audio.currentTime = state.range.endTime; } catch(_){}
+      handleRangeEnd();
+      _rafId = null;
+      return;
+    }
+  }
+  if (ts - _lastSaveCheckTs > CONFIG.PLAYING_SAVE_INTERVAL_MS) {
+    _lastSaveCheckTs = ts;
+    safeSave();
+  }
+  _rafId = requestAnimationFrame(_rafTick);
+}
+function startRafLoop() { if (_rafId !== null) return; if (!state.playing || !state._tabVisible) return; _rafId = requestAnimationFrame(_rafTick); }
+function stopRafLoop() { if (_rafId !== null) { cancelAnimationFrame(_rafId); _rafId = null; } }
+
+let _rangeHardStop = null;
+function clearRangeHardStop() { if (_rangeHardStop) { clearTimeout(_rangeHardStop); _rangeHardStop = null; } }
+function scheduleHardStop() {
+  clearRangeHardStop();
+  if (!state.range.active || state.range.openEnded) return;
+  if (state.current !== state.range.surah) return;
+  const cur = els.audio.currentTime || 0;
+  const end = state.range.endTime;
+  if (!isFinite(cur) || !isFinite(end) || end <= cur) return;
+  const delay = Math.max(0, (end - cur) * 1000 - 30);
+  _rangeHardStop = setTimeout(() => {
+    _rangeHardStop = null;
+    if (!state.range.active || state.range.openEnded) return;
+    if (state.current !== state.range.surah) return;
+    try { els.audio.pause(); } catch(_){}
+    try { els.audio.currentTime = state.range.endTime; } catch(_){}
+    handleRangeEnd();
+  }, delay);
+}
+function startRangeWatch() { clearRangeHardStop(); if (!state.range.active || state.range.openEnded) return; scheduleHardStop(); }
+function stopRangeWatch() { clearRangeHardStop(); }
+
+let _playingSaveTimer = null;
+function schedulePlayingSave() { if (_playingSaveTimer) clearTimeout(_playingSaveTimer); _playingSaveTimer = null; if (!state._playIntent || !state.current) return; _playingSaveTimer = setTimeout(() => { _playingSaveTimer = null; if (state._playIntent && state.current) { safeSave(); schedulePlayingSave(); } }, CONFIG.PLAYING_SAVE_INTERVAL_MS); }
+function cancelPlayingSave() { if (_playingSaveTimer) { clearTimeout(_playingSaveTimer); _playingSaveTimer = null; } }
+
 const Audio = {
   load(num, { autoplay = true, seek = 0 } = {}) {
     if (!SURAH_MAP.has(num)) return;
     const inL2 = state.range.active && state.range.crossSurah && state.range.phase === "leg2" && num === state.range.endSurah;
     if (state.range.active && !inL2) { const sc = (num !== state.range.surah) || (state.range.crossSurah && state.range.phase === "leg2"); if (sc) { const rc = state.range.repeatCount || 1; const ss = state.range.sameSurah; state.range = emptyRange(); state.range.repeatCount = rc; state.range.sameSurah = ss; UI.updateRangeBadges(); UI.rangeMarkers(); Range.syncUI(); stopRangeWatch(); } }
     markSilentSwitch();
-    const myId = prepareAudioSource(num, seek);
+    _audioLoadId++; pauseAudio();
+    state.current = num; state.currentTime = seek || 0;
+    setLoadedSource(state.reciterId, num);
+    try { els.audio.src = resolveSurahSrc(state.reciterId, num); els.audio.playbackRate = state.speed; els.audio.volume = state.volume; els.audio.muted = state.volume === 0; els.audio.load(); } catch(_){}
     TextAPI.fetch(num).catch(() => {});
-    if (autoplay) { const p = els.audio.play(); if (p && p.catch) p.catch(err => { if (myId !== _audioLoadId) return; if (err && err.name === "AbortError") return; if (_silentSwitch) return; }); }
+    if (autoplay) { state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); }
+    OfflineResume.clear();
     saveSoon();
   },
-  play() { const p = els.audio.play(); if (p && p.catch) p.catch(err => { if (err && err.name === "AbortError") return; if (_silentSwitch) return; }); },
-  pause() { els.audio.pause(); },
+  play() { state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); if (!navigator.onLine && state.current) OfflineResume.updatePlayState(true); },
+  pause() { state._playIntent = false; els.audio.pause(); safeSave(); if (!navigator.onLine && state.current) OfflineResume.updatePlayState(false); },
   toggle() { if (!state.current) return; if (els.audio.paused) Audio.play(); else Audio.pause(); },
-  seekTo(sec) { if (!isFinite(els.audio.duration)) return; els.audio.currentTime = clamp(sec, 0, els.audio.duration); },
+  seekTo(sec) { if (!isFinite(els.audio.duration)) return; const wasPlaying = state._playIntent; els.audio.currentTime = clamp(sec, 0, els.audio.duration); if (wasPlaying && els.audio.paused) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); } safeSave(); },
   setVolume(v) { state.volume = clamp(v, 0, 1); els.audio.volume = state.volume; els.audio.muted = state.volume === 0; UI.volume(); saveSoon(); },
   setSpeed(s) { state.speed = s; els.audio.playbackRate = s; UI.speed(); saveSoon(); },
 };
@@ -520,8 +944,8 @@ const Audio = {
 async function switchReciterSmart(newRid) {
   if (state.reciterId === newRid) return;
   const oldRid = state.reciterId;
-  const wasPlaying = !els.audio.paused;
-  const oldTime = els.audio.currentTime || 0;
+  const wasPlaying = state._playIntent;
+  const oldTime = els.audio.currentTime || state.currentTime || 0;
   const curSurah = state.current;
   let curAyah = null;
   if (curSurah) {
@@ -533,23 +957,38 @@ async function switchReciterSmart(newRid) {
   UI.reciterName(rec.name); UI.updateDownloadedBadges(); UI.updateMobileValues(); saveSoon();
   if (!curSurah) { toast(`🎙️ ${rec.name}`, "success"); return; }
   if (!TimingsAPI.has(newRid, curSurah) && !TimingsAPI.isDisabled(newRid)) { try { await TimingsAPI.fetch(newRid, curSurah); } catch(_){} }
-  let targetTime = 0; let precise = false;
+  let targetTime = oldTime; let precise = false;
   const newTimings = TimingsAPI.getFor(newRid, curSurah);
   const newKeys = TimingsAPI.getKeysFor(newRid, curSurah);
   if (curAyah !== null && newTimings && newTimings[curAyah]) { targetTime = newTimings[curAyah].startTime; precise = true; }
   else if (curAyah !== null && newTimings && newKeys && newKeys.length) { let nearest = newKeys[0], best = Math.abs(newKeys[0] - curAyah); for (const k of newKeys) { const d = Math.abs(k - curAyah); if (d < best) { best = d; nearest = k; } } targetTime = newTimings[nearest].startTime; precise = true; }
-  else if (curSurah === 1) { const est = getFatihahEstimated(els.audio.duration); if (est && curAyah && est[curAyah]) { targetTime = est[curAyah].startTime; precise = true; } }
-  if (state.range.active && state.range.surah === curSurah && !state.range.crossSurah) {
-    const r = state.range;
-    if (r.mode === "duration") { const rangeDur = r.endTime - r.startTime; r.startTime = targetTime; r.endTime = targetTime + rangeDur; }
-    else if (newTimings) { if (r.startAyah && newTimings[r.startAyah]) r.startTime = newTimings[r.startAyah].startTime; if (r.endAyah && newTimings[r.endAyah]) r.endTime = newTimings[r.endAyah].endTime + CONFIG.defaultEndBuffer; }
-    UI.rangeMarkers();
+  else if (curSurah === 1 && curAyah !== null) { const est = getFatihahEstimated(els.audio.duration); if (est && est[curAyah]) { targetTime = est[curAyah].startTime; precise = true; } }
+  if (state.range.active && state.range.surah === curSurah && !state.range.crossSurah) { const r = state.range; if (r.mode === "duration") { const rangeDur = r.endTime - r.startTime; r.startTime = targetTime; r.endTime = targetTime + rangeDur; } else if (newTimings) { if (r.startAyah && newTimings[r.startAyah]) r.startTime = newTimings[r.startAyah].startTime; if (r.endAyah && newTimings[r.endAyah]) r.endTime = newTimings[r.endAyah].endTime + CONFIG.defaultEndBuffer; } UI.rangeMarkers(); }
+
+  const isOffline = !navigator.onLine;
+  if (isOffline) {
+    state.currentTime = targetTime;
+    OfflineResume.updateReciter(newRid, targetTime);
+    UI.updatePlayingCard(); UI.nowPlaying(); UI.progress();
+    Subtitle.currentKey = null; Subtitle.update();
+    if (precise && curAyah !== null) toast(`🎙️ ${rec.name} — سيبدأ من آية ${curAyah} عند الاتصال`, "info");
+    else toast(`🎙️ ${rec.name} — بانتظار الاتصال`, "info");
+    return;
   }
+
   UI._markerRenderKey = null;
   markSilentSwitch();
-  prepareAudioSource(curSurah, targetTime);
-  if (wasPlaying) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); }
-  UI.updatePlayingCard(); UI.nowPlaying(); Subtitle.currentKey = null;
+  try { pauseAudio(); state.currentTime = targetTime; setLoadedSource(newRid, curSurah); els.audio.src = resolveSurahSrc(newRid, curSurah); els.audio.playbackRate = state.speed; els.audio.volume = state.volume; els.audio.muted = state.volume === 0; els.audio.load(); } catch(_) {}
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; els.audio.removeEventListener("canplay", onCanPlay); els.audio.removeEventListener("error", onErr); clearTimeout(tmo); resolve(); };
+    const onCanPlay = () => { try { els.audio.currentTime = targetTime; state.currentTime = targetTime; } catch(_){} if (wasPlaying) { state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); } UI._markerRenderKey = null; UI.renderAyahMarkers(); UI.progress(); Subtitle.currentKey = null; Subtitle.update(); finish(); };
+    const onErr = () => finish();
+    els.audio.addEventListener("canplay", onCanPlay);
+    els.audio.addEventListener("error", onErr);
+    const tmo = setTimeout(finish, 8000);
+  });
+  UI.updatePlayingCard(); UI.nowPlaying(); UI.rangeMarkers(); Subtitle.currentKey = null; Subtitle.update();
   if (precise && curAyah !== null) toast(`🎙️ ${rec.name} — بدءاً من آية ${curAyah}`, "success");
   else toast(`🎙️ ${rec.name}`, "success");
 }
@@ -572,24 +1011,13 @@ const Queue = {
 };
 function syncQueueIndex() { if (state.mode === "queue" && state.current) state.qIndex = state.queue.indexOf(state.current); }
 
-let rangeWatchTimer = null, _rangeHardStop = null;
-function stopRangeWatch() { if (rangeWatchTimer) { clearInterval(rangeWatchTimer); rangeWatchTimer = null; } clearRangeHardStop(); }
-function clearRangeHardStop() { if (_rangeHardStop) { clearTimeout(_rangeHardStop); _rangeHardStop = null; } }
-
 function handleRangeEnd() {
   if (!state.range.active || state.range.openEnded) return;
   clearRangeHardStop();
   const r = state.range;
   const totalPlays = Math.max(1, r.repeatCount || 1);
   const currentIter = (r.repeatIndex || 0) + 1;
-  if (currentIter < totalPlays) {
-    r.repeatIndex = currentIter;
-    els.audio.pause();
-    toast(`🔁 التشغيل ${currentIter + 1} من ${totalPlays} — إعادة...`, "repeat");
-    UI.phaseNotice(); UI.nowPlaying(); saveSoon();
-    setTimeout(restartRange, CONFIG.repeatRestartDelayMs);
-    return;
-  }
+  if (currentIter < totalPlays) { r.repeatIndex = currentIter; els.audio.pause(); toast(`🔁 التشغيل ${currentIter + 1} من ${totalPlays} — إعادة...`, "repeat"); UI.phaseNotice(); UI.nowPlaying(); saveSoon(); setTimeout(restartRange, CONFIG.repeatRestartDelayMs); return; }
   const endS = SURAH_MAP.get(r.endSurah || r.surah);
   const suf = totalPlays > 1 ? ` (بعد ${totalPlays} مرات)` : "";
   let msg;
@@ -606,18 +1034,8 @@ function handleRangeEnd() {
 function restartRange() {
   if (!state.range.active) return;
   const r = state.range;
-  if (r.crossSurah) {
-    r.phase = "leg1";
-    state._restoredFromSaved = false;
-    markSilentSwitch();
-    prepareAudioSource(r.surah, r.startTime);
-    state.currentTime = r.startTime;
-    TextAPI.fetch(r.surah).catch(() => {});
-    const p = els.audio.play(); if (p && p.catch) p.catch(() => {});
-  } else {
-    try { els.audio.currentTime = r.startTime; state.currentTime = r.startTime; } catch(_){}
-    Audio.play();
-  }
+  if (r.crossSurah) { r.phase = "leg1"; state._restoredFromSaved = false; markSilentSwitch(); _audioLoadId++; pauseAudio(); state.current = r.surah; state.currentTime = r.startTime; setLoadedSource(state.reciterId, r.surah); try { els.audio.src = resolveSurahSrc(state.reciterId, r.surah); els.audio.load(); } catch(_){} TextAPI.fetch(r.surah).catch(() => {}); state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); }
+  else { try { els.audio.currentTime = r.startTime; state.currentTime = r.startTime; } catch(_){} Audio.play(); }
   UI.updatePlayingCard(); UI.updateRangeBadges(); UI.rangeMarkers();
   UI.nowPlaying(); UI.phaseNotice(); saveSoon();
   startRangeWatch();
@@ -625,47 +1043,7 @@ function restartRange() {
   Subtitle.update();
 }
 
-function rangeCheckTick() {
-  if (!state.range.active || state.range.openEnded || els.audio.paused) return;
-  if (state.current !== state.range.surah) return;
-  const t = els.audio.currentTime;
-  if (t >= state.range.endTime) {
-    try { els.audio.pause(); } catch(_){}
-    try { els.audio.currentTime = state.range.endTime; } catch(_){}
-    handleRangeEnd();
-  }
-}
-function scheduleHardStop() {
-  clearRangeHardStop();
-  if (!state.range.active || state.range.openEnded) return;
-  if (state.current !== state.range.surah) return;
-  const cur = els.audio.currentTime || 0;
-  const end = state.range.endTime;
-  if (!isFinite(cur) || !isFinite(end) || end <= cur) return;
-  const delay = Math.max(0, (end - cur) * 1000 - 30);
-  _rangeHardStop = setTimeout(() => {
-    _rangeHardStop = null;
-    if (!state.range.active || state.range.openEnded) return;
-    if (state.current !== state.range.surah) return;
-    try { els.audio.pause(); } catch(_){}
-    try { els.audio.currentTime = state.range.endTime; } catch(_){}
-    handleRangeEnd();
-  }, delay);
-}
-function startRangeWatch() {
-  stopRangeWatch();
-  if (!state.range.active || state.range.openEnded) return;
-  rangeWatchTimer = setInterval(rangeCheckTick, CONFIG.rangeCheckIntervalMs);
-  scheduleHardStop();
-}
-function transitionToLeg2() {
-  if (!state.range.active || !state.range.crossSurah || state.range.phase !== "leg1") return;
-  const e = state.range.endSurah; if (!e || !SURAH_MAP.has(e)) return;
-  state.range.phase = "leg2"; state._restoredFromSaved = false; markSilentSwitch(); prepareAudioSource(e, 0); TextAPI.fetch(e).catch(() => {});
-  const p = els.audio.play(); if (p && p.catch) p.catch(() => {});
-  UI.updatePlayingCard(); UI.nowPlaying(); UI.updateRangeBadges(); UI.rangeMarkers(); UI.phaseNotice(); saveSoon();
-  toast(`▶ الانتقال إلى ${SURAH_MAP.get(e).nameAr} — حتى آية ${state.range.endAyah}`, "info");
-}
+function transitionToLeg2() { if (!state.range.active || !state.range.crossSurah || state.range.phase !== "leg1") return; const e = state.range.endSurah; if (!e || !SURAH_MAP.has(e)) return; state.range.phase = "leg2"; state._restoredFromSaved = false; markSilentSwitch(); _audioLoadId++; pauseAudio(); state.current = e; state.currentTime = 0; setLoadedSource(state.reciterId, e); try { els.audio.src = resolveSurahSrc(state.reciterId, e); els.audio.load(); } catch(_){} TextAPI.fetch(e).catch(() => {}); state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); UI.updatePlayingCard(); UI.nowPlaying(); UI.updateRangeBadges(); UI.rangeMarkers(); UI.phaseNotice(); saveSoon(); toast(`▶ الانتقال إلى ${SURAH_MAP.get(e).nameAr} — حتى آية ${state.range.endAyah}`, "info"); }
 
 const Range = {
   isOpen() { return els.rangePanel.classList.contains("on"); },
@@ -682,35 +1060,12 @@ const Range = {
   getExtendedEndTime(sn, ayah, dur) {
     const timings = TimingsAPI.getFor(state.reciterId, sn);
     const buffer = CONFIG.ayahBoundaryBufferMs / 1000;
-    if (timings && timings[ayah]) {
-      const cur = timings[ayah];
-      const nextAyah = timings[ayah + 1];
-      if (nextAyah && nextAyah.startTime > cur.startTime + 0.2) {
-        const stopBeforeNext = nextAyah.startTime - buffer;
-        const limitByEnd = cur.endTime > cur.startTime + 0.4 ? cur.endTime - 0.05 : null;
-        if (limitByEnd !== null) return Math.max(cur.startTime + 0.3, Math.min(stopBeforeNext, limitByEnd));
-        return Math.max(cur.startTime + 0.3, stopBeforeNext);
-      }
-      if (dur > 0 && dur > cur.startTime + 0.3) return dur;
-      return cur.endTime;
-    }
+    if (timings && timings[ayah]) { const cur = timings[ayah]; const nextAyah = timings[ayah + 1]; if (nextAyah && nextAyah.startTime > cur.startTime + 0.2) { const stopBeforeNext = nextAyah.startTime - buffer; const limitByEnd = cur.endTime > cur.startTime + 0.4 ? cur.endTime - 0.05 : null; if (limitByEnd !== null) return Math.max(cur.startTime + 0.3, Math.min(stopBeforeNext, limitByEnd)); return Math.max(cur.startTime + 0.3, stopBeforeNext); } if (dur > 0 && dur > cur.startTime + 0.3) return dur; return cur.endTime; }
     if (sn === 1) { const est = getFatihahEstimated(dur); if (est && est[ayah]) { const cur = est[ayah]; const nextAyah = est[ayah + 1]; if (nextAyah) return Math.max(cur.startTime + 0.3, nextAyah.startTime - buffer); return dur > 0 ? dur : cur.endTime; } }
     return null;
   },
-  /* ⭐ نفس السورة: تعطيل/تفعيل الحقول */
-  updateSameSurahUI() {
-    const on = !!state.range.sameSurah;
-    if (els.rpSameSurah) {
-      els.rpSameSurah.classList.toggle("active", on);
-      els.rpSameSurah.setAttribute("aria-pressed", on ? "true" : "false");
-    }
-    [els.rpStartField, els.rpModeField, els.rpEndAyahField, els.rpDurationField].forEach(f => { if (f) f.classList.toggle("rp-disabled", on); });
-  },
-  toggleSameSurah() {
-    state.range.sameSurah = !state.range.sameSurah;
-    Range.updateSameSurahUI();
-    if (state.range.sameSurah) toast("🔁 سورة كاملة — عدد المرات شغال عادي", "info");
-  },
+  updateSameSurahUI() { const on = !!state.range.sameSurah; if (els.rpSameSurah) { els.rpSameSurah.classList.toggle("active", on); els.rpSameSurah.setAttribute("aria-pressed", on ? "true" : "false"); } [els.rpStartField, els.rpModeField, els.rpEndAyahField, els.rpDurationField].forEach(f => { if (f) f.classList.toggle("rp-disabled", on); }); },
+  toggleSameSurah() { state.range.sameSurah = !state.range.sameSurah; Range.updateSameSurahUI(); if (state.range.sameSurah) toast("🔁 سورة كاملة — عدد المرات شغال عادي", "info"); },
   syncUI() {
     const s = state.current ? SURAH_MAP.get(state.current) : null; if (!s) { els.rpSurahName.textContent = ""; return; }
     els.rpSurahName.textContent = `— سورة ${s.nameAr} (${s.ayahs} آية)`;
@@ -729,13 +1084,8 @@ const Range = {
       const inL1 = !state.range.crossSurah && state.current === state.range.surah;
       const inCL1 = state.range.crossSurah && state.range.phase === "leg1" && state.current === state.range.surah;
       const inCL2 = state.range.crossSurah && state.range.phase === "leg2" && state.current === state.range.endSurah;
-      if (inL1 || inCL1 || inCL2) {
-        els.rpStartSelect.value = state.range.startAyah || "";
-        if (state.range.crossSurah) { els.rpEndSurahSelect.value = state.range.endSurah || state.current; const esx = SURAH_MAP.get(state.range.endSurah); Range.buildAyahOptions(els.rpEndSelect, esx ? esx.ayahs : s.ayahs, true); }
-        if (state.range.mode === "ayah") els.rpEndSelect.value = state.range.endAyah || "";
-        else { const ts = Math.max(0, Math.round(state.range.endTime - state.range.startTime)); const h = Math.floor(ts / 3600); const m = Math.floor((ts % 3600) / 60); els.rpDurHours.value = h > 0 ? h : ""; els.rpDurMinutes.value = m > 0 ? m : ""; }
-        els.rpRepeatCount.value = state.range.repeatCount || 1;
-      } else { els.rpStartSelect.value = ""; els.rpEndSelect.value = ""; els.rpDurHours.value = ""; els.rpDurMinutes.value = ""; }
+      if (inL1 || inCL1 || inCL2) { els.rpStartSelect.value = state.range.startAyah || ""; if (state.range.crossSurah) { els.rpEndSurahSelect.value = state.range.endSurah || state.current; const esx = SURAH_MAP.get(state.range.endSurah); Range.buildAyahOptions(els.rpEndSelect, esx ? esx.ayahs : s.ayahs, true); } if (state.range.mode === "ayah") els.rpEndSelect.value = state.range.endAyah || ""; else { const ts = Math.max(0, Math.round(state.range.endTime - state.range.startTime)); const h = Math.floor(ts / 3600); const m = Math.floor((ts % 3600) / 60); els.rpDurHours.value = h > 0 ? h : ""; els.rpDurMinutes.value = m > 0 ? m : ""; } els.rpRepeatCount.value = state.range.repeatCount || 1; }
+      else { els.rpStartSelect.value = ""; els.rpEndSelect.value = ""; els.rpDurHours.value = ""; els.rpDurMinutes.value = ""; }
     } else { els.rpStartSelect.value = ""; els.rpEndSelect.value = ""; els.rpDurHours.value = ""; els.rpDurMinutes.value = ""; els.rpRepeatCount.value = "1"; }
     Range.refreshCrossSurahUI(); Range.updateRepeatHighlight(); Range.updateSameSurahUI(); UI.phaseNotice();
   },
@@ -745,14 +1095,9 @@ const Range = {
     if (!state.current) { toast("شغّل سورة أولًا", "error"); return; }
     const ssn = state.range.active && state.range.crossSurah && state.range.surah ? state.range.surah : state.current;
     const ss = SURAH_MAP.get(ssn); if (!ss) { toast("تعذر تحديد سورة البداية", "error"); return; }
-    let rc = parseInt(els.rpRepeatCount.value, 10);
-    if (!isFinite(rc) || isNaN(rc) || rc < 1) rc = 1;
-    rc = clamp(rc, 1, CONFIG.maxRepeatCount);
-
-    /* ═══ ⭐ وضع "نفس السورة كاملة" ═══ */
+    let rc = parseInt(els.rpRepeatCount.value, 10); if (!isFinite(rc) || isNaN(rc) || rc < 1) rc = 1; rc = clamp(rc, 1, CONFIG.maxRepeatCount);
     if (state.range.sameSurah) {
-      const sFull = SURAH_MAP.get(state.current);
-      if (!sFull) return;
+      const sFull = SURAH_MAP.get(state.current); if (!sFull) return;
       const sdur = (isFinite(els.audio.duration) && els.audio.duration > 0) ? els.audio.duration : null;
       await Range.ensureTimings(state.current);
       const sd = Range.getAyahTime(state.current, 1, sdur);
@@ -770,7 +1115,6 @@ const Range = {
       setTimeout(() => { if (Range.isOpen()) Range.close(); }, CONFIG.autoClosePanelDelayMs);
       return;
     }
-
     let sa = parseInt(els.rpStartSelect.value, 10); if (!isFinite(sa) || sa < 1) { Range.showError(els.rpStartField, "⚠️ اختر آية البداية"); return; } sa = clamp(sa, 1, ss.ayahs);
     let esn = parseInt(els.rpEndSurahSelect.value, 10); if (!isFinite(esn) || !SURAH_MAP.has(esn)) esn = state.current;
     const es = SURAH_MAP.get(esn); const ic = esn !== ssn; const mode = state.range._pendingMode || "ayah";
@@ -784,7 +1128,7 @@ const Range = {
       let st = sd ? sd.startTime : 0, et = extendedEnd !== null ? extendedEnd : 0;
       state.range = { active: true, surah: ssn, endSurah: esn, crossSurah: true, phase: "leg1", mode: "ayah", startAyah: sa, endAyah: ea, startTime: st, endTime: et, _pendingMode: "ayah", estimated: false, openEnded: false, repeatCount: rc, repeatIndex: 0, sameSurah: false };
       state.currentTime = state.range.startTime; state._restoredFromSaved = false;
-      if (state.current !== ssn) { markSilentSwitch(); prepareAudioSource(ssn, state.range.startTime); TextAPI.fetch(ssn).catch(() => {}); if (!els.audio.paused) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); } } else { try { els.audio.currentTime = state.range.startTime; } catch(_){} }
+      if (state.current !== ssn) { markSilentSwitch(); _audioLoadId++; pauseAudio(); state.current = ssn; state.currentTime = state.range.startTime; setLoadedSource(state.reciterId, ssn); try { els.audio.src = resolveSurahSrc(state.reciterId, ssn); els.audio.load(); } catch(_){} TextAPI.fetch(ssn).catch(() => {}); if (state._playIntent) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); } } else { try { els.audio.currentTime = state.range.startTime; } catch(_){} }
       UI.updateRangeBadges(); UI.rangeMarkers(); UI.updateResumeCard(); UI.nowPlaying(); UI.phaseNotice(); saveSoon();
       if (!els.audio.paused) startRangeWatch();
       const rtxt = rc > 1 ? ` × ${rc} مرات` : "";
@@ -792,7 +1136,7 @@ const Range = {
       setTimeout(() => { if (Range.isOpen()) Range.close(); }, CONFIG.autoClosePanelDelayMs);
       return;
     }
-    if (state.current !== ssn) { markSilentSwitch(); prepareAudioSource(ssn, 0); TextAPI.fetch(ssn).catch(() => {}); if (!els.audio.paused) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); } await new Promise(r => { if (isFinite(els.audio.duration) && els.audio.duration > 0) { r(); return; } const ol = () => { els.audio.removeEventListener("loadedmetadata", ol); r(); }; els.audio.addEventListener("loadedmetadata", ol); setTimeout(r, 1500); }); }
+    if (state.current !== ssn) { markSilentSwitch(); _audioLoadId++; pauseAudio(); state.current = ssn; state.currentTime = 0; setLoadedSource(state.reciterId, ssn); try { els.audio.src = resolveSurahSrc(state.reciterId, ssn); els.audio.load(); } catch(_){} TextAPI.fetch(ssn).catch(() => {}); if (state._playIntent) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); } await new Promise(r => { if (isFinite(els.audio.duration) && els.audio.duration > 0) { r(); return; } const ol = () => { els.audio.removeEventListener("loadedmetadata", ol); r(); }; els.audio.addEventListener("loadedmetadata", ol); setTimeout(r, 1500); }); }
     const dur = (isFinite(els.audio.duration) && els.audio.duration > 0) ? els.audio.duration : sdur;
     if (!dur) { toast("انتظر تحميل السورة", "error"); return; }
     if (mode === "ayah") {
@@ -859,327 +1203,134 @@ const RecitersUI = {
 };
 
 const Downloads = {
-  _queue: [],
-  _running: 0,
-  _controllers: new Map(),
-  _progress: new Map(),
-
-  /* هل السورة دي تحت التنزيل حاليًا؟ */
+  _queue: [], _running: 0, _controllers: new Map(), _progress: new Map(),
   isDownloading(key) { return this._controllers.has(key); },
-
-  /* إلغاء تنزيل جاري */
   cancel(key) {
-    const ctrl = this._controllers.get(key);
-    if (!ctrl) return;
-    ctrl.abort();
-    this._controllers.delete(key);
-    this._progress.delete(key);
+    const ctrl = this._controllers.get(key); if (!ctrl) return;
+    ctrl.abort(); this._controllers.delete(key); this._progress.delete(key);
     this._queue = this._queue.filter(it => `${it.reciterId}-${it.surahNum}` !== key);
-
     const [r, s] = key.split("-").map(Number);
     const btn = cardEls.get(s)?.querySelector('[data-act="download"]');
-    if (btn) {
-      btn.classList.remove("downloading");
-      btn.classList.add("cancelled");
-      btn.innerHTML = `<span class="ring"></span><svg viewBox="0 0 24 24">${ICONS.x}</svg>`;
-      setTimeout(() => {
-        btn.classList.remove("cancelled");
-        btn.innerHTML = `<span class="ring"></span><svg viewBox="0 0 24 24">${ICONS.download}</svg>`;
-      }, 1200);
-    }
+    if (btn) { btn.classList.remove("downloading"); btn.classList.add("cancelled"); btn.innerHTML = `<span class="ring"></span><svg viewBox="0 0 24 24">${ICONS.x}</svg>`; setTimeout(() => { btn.classList.remove("cancelled"); btn.innerHTML = `<span class="ring"></span><svg viewBox="0 0 24 24">${ICONS.download}</svg>`; }, 1200); }
     const dlItem = els.dlList.querySelector(`.dl-item[data-key="${key}"]`);
-    if (dlItem) {
-      dlItem.classList.remove("downloading");
-      dlItem.classList.add("failed");
-      const small = dlItem.querySelector("small");
-      if (small) small.textContent = "✗ أُلغي";
-    }
+    if (dlItem) { dlItem.classList.remove("downloading"); dlItem.classList.add("failed"); const small = dlItem.querySelector("small"); if (small) small.textContent = "✗ أُلغي"; }
     toast("تم إلغاء التحميل");
   },
-
-  async loadFromIDB() {
-    try {
-      const all = await IDB.getAll();
-      state.downloads = all.map(r => ({ key: r.key, reciterId: r.reciterId, surahNum: r.surahNum, size: r.size || (r.blob ? r.blob.size : 0) }));
-      all.forEach(r => { if (r.blob) registerObjectUrl(r.reciterId, r.surahNum, r.blob); });
-    } catch (e) { state.downloads = []; }
-  },
-
+  async loadFromIDB() { try { const all = await IDB.getAll(); state.downloads = all.map(r => ({ key: r.key, reciterId: r.reciterId, surahNum: r.surahNum, size: r.size || (r.blob ? r.blob.size : 0) })); all.forEach(r => { if (r.blob) registerObjectUrl(r.reciterId, r.surahNum, r.blob); }); } catch (e) { state.downloads = []; } },
   isDownloaded(rid, sn) { return state.downloads.some(d => d.reciterId === rid && d.surahNum === sn); },
-
-   /* ⭐ progress حقيقي بـ getReader + fallback لـ blob() لو حصل قطع */
   async downloadOne(rid, sn, { onProgress } = {}) {
     const key = `${rid}-${sn}`;
     if (Downloads.isDownloaded(rid, sn)) { if (onProgress) onProgress(1, 1, true); return true; }
-
     const controller = new AbortController();
     Downloads._controllers.set(key, controller);
-
     const url = getSurahUrl(rid, sn);
     try {
       const res = await fetch(url, { cache: "no-store", signal: controller.signal });
       if (!res.ok) throw new Error("HTTP " + res.status);
       if (!res.body) throw new Error("لا يوجد محتوى");
-
       const total = +(res.headers.get("Content-Length") || 0);
-
-      /* ⭐ المحاولة 1: قراءة chunks مع progress حقيقي */
       let blob = null;
-      try {
-        const reader = res.body.getReader();
-        const chunks = [];
-        let received = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-          chunks.push(value);
-          received += value.length;
-          if (onProgress && total > 0) onProgress(received, total);
-        }
-
-        /* ⭐ تحقق: لو الحجم وصل لـ 98%+ من Content-Length → تمام */
-        if (total > 0 && received < total * 0.98) {
-          throw new Error(`حجم ناقص: ${received}/${total}`);
-        }
-        blob = new Blob(chunks, { type: "audio/mpeg" });
-      } catch (readerErr) {
-        if (readerErr.name === "AbortError") throw readerErr;
-        console.warn("[Download] reader failed → fallback to blob:", readerErr.message);
-        /* ⭐ المحاولة 2 (fallback): نقرأ blob مباشرة */
-        const res2 = await fetch(url, { cache: "no-store", signal: controller.signal });
-        if (!res2.ok) throw new Error("HTTP " + res2.status);
-        blob = await res2.blob();
-      }
-
+      try { const reader = res.body.getReader(); const chunks = []; let received = 0; while (true) { const { done, value } = await reader.read(); if (done) break; if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError"); chunks.push(value); received += value.length; if (onProgress && total > 0) onProgress(received, total); } if (total > 0 && received < total * 0.98) throw new Error(`حجم ناقص: ${received}/${total}`); blob = new Blob(chunks, { type: "audio/mpeg" }); }
+      catch (readerErr) { if (readerErr.name === "AbortError") throw readerErr; console.warn("[Download] reader failed → fallback:", readerErr.message); const res2 = await fetch(url, { cache: "no-store", signal: controller.signal }); if (!res2.ok) throw new Error("HTTP " + res2.status); blob = await res2.blob(); }
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
       if (!blob || blob.size === 0) throw new Error("ملف فارغ");
-
-      /* ⭐ نبلغ 100% بعد ما نخلص */
       if (onProgress) onProgress(blob.size, blob.size, false);
-
       const rec = { key, reciterId: rid, surahNum: sn, blob, size: blob.size, timestamp: Date.now() };
-      await IDB.put(rec);
-      registerObjectUrl(rid, sn, blob);
+      await IDB.put(rec); registerObjectUrl(rid, sn, blob);
       state.downloads.push({ key, reciterId: rid, surahNum: sn, size: blob.size });
-
-      /* تحميل التوقيتات + النص فقط لما المستخدم يختار "تحميل" */
       try { if (!TimingsAPI.has(rid, sn) && !TimingsAPI.isDisabled(rid)) await TimingsAPI.fetch(rid, sn, true); } catch(_){}
       try { if (!TextAPI.has(sn)) await TextAPI.fetch(sn, true); } catch(_){}
-
       if (onProgress) onProgress(blob.size, blob.size, true);
       return true;
-    } catch (e) {
-      if (e.name === "AbortError") return false;
-      console.error("[Download] Failed:", key, e);
-      if (onProgress) onProgress(0, 0, false, e);
-      return false;
-    } finally {
-      Downloads._controllers.delete(key);
-      Downloads._progress.delete(key);
-    }
+    } catch (e) { if (e.name === "AbortError") return false; console.error("[Download] Failed:", key, e); if (onProgress) onProgress(0, 0, false, e); return false; } finally { Downloads._controllers.delete(key); Downloads._progress.delete(key); }
   },
-
   async deleteOne(rid, sn) {
     const key = `${rid}-${sn}`;
     try { await IDB.delete(key); } catch(_){}
     unregisterObjectUrl(rid, sn);
     state.downloads = state.downloads.filter(d => !(d.reciterId === rid && d.surahNum === sn));
-    try {
-      await IDB.deleteTiming(rid, sn);
-      if (TimingsAPI.cache[rid]) delete TimingsAPI.cache[rid][sn];
-      if (TimingsAPI.sortedKeys[rid]) delete TimingsAPI.sortedKeys[rid][sn];
-    } catch(_){}
+    try { await IDB.deleteTiming(rid, sn); if (TimingsAPI.cache[rid]) delete TimingsAPI.cache[rid][sn]; if (TimingsAPI.sortedKeys[rid]) delete TimingsAPI.sortedKeys[rid][sn]; } catch(_){}
     const anyOther = state.downloads.some(d => d.surahNum === sn);
-    if (!anyOther) {
-      try { await IDB.deleteText(sn); delete TextAPI.cache[sn]; } catch(_){}
-    }
+    if (!anyOther) { try { await IDB.deleteText(sn); TextAPI.cache.delete(sn); } catch(_){} }
     UI.updateDownloadedBadges(); UI.updateMobileValues();
-    if (state.current === sn && state.reciterId === rid) {
-      const wp = !els.audio.paused;
-      const pos = els.audio.currentTime || 0;
-      try { els.audio.src = getSurahUrl(rid, sn); } catch(_){}
-      els.audio.load();
-      els.audio.addEventListener("loadedmetadata", function once() {
-        els.audio.removeEventListener("loadedmetadata", once);
-        try { els.audio.currentTime = pos; } catch(_){}
-        if (wp) Audio.play();
-      });
-    }
+    if (state.current === sn && state.reciterId === rid) { const wp = state._playIntent; const pos = els.audio.currentTime || 0; try { els.audio.src = getSurahUrl(rid, sn); } catch(_){} els.audio.load(); els.audio.addEventListener("loadedmetadata", function once() { els.audio.removeEventListener("loadedmetadata", once); try { els.audio.currentTime = pos; } catch(_){} if (wp) Audio.play(); }); }
   },
-
-  async clearAll() {
-    try { await IDB.clear(); } catch(_){}
-    try { await IDB.clearTimings(); } catch(_){}
-    try { await IDB.clearTexts(); } catch(_){}
-    for (const k of _objectUrls.keys()) { try { URL.revokeObjectURL(_objectUrls.get(k)); } catch(_){} }
-    _objectUrls.clear();
-    state.downloads = [];
-    TimingsAPI.cache = {}; TimingsAPI.sortedKeys = {};
-    TextAPI.cache = {};
-    UI.updateDownloadedBadges(); UI.updateMobileValues();
-  },
-
+  async clearAll() { try { await IDB.clear(); } catch(_){} try { await IDB.clearTimings(); } catch(_){} try { await IDB.clearTexts(); } catch(_){} for (const k of _objectUrls.keys()) { try { URL.revokeObjectURL(_objectUrls.get(k)); } catch(_){} } _objectUrls.clear(); state.downloads = []; TimingsAPI.cache = {}; TimingsAPI.sortedKeys = {}; TimingsAPI._touchMap.clear(); TextAPI.cache.clear(); UI.updateDownloadedBadges(); UI.updateMobileValues(); },
   enqueue(items) { items.forEach(it => Downloads._queue.push(it)); Downloads.pump(); },
   pump() { while (Downloads._running < CONFIG.downloadConcurrency && Downloads._queue.length) { const it = Downloads._queue.shift(); Downloads._running++; Downloads.runTask(it).finally(() => { Downloads._running--; Downloads.pump(); }); } },
-
   async runTask({ reciterId, surahNum }) {
     const key = `${reciterId}-${surahNum}`;
     const btn = cardEls.get(surahNum)?.querySelector('[data-act="download"]');
     const dlItem = els.dlList.querySelector(`.dl-item[data-key="${key}"]`);
     const dlProg = dlItem?.querySelector(".dl-progress i");
     const dlSmall = dlItem?.querySelector("small");
-
-    if (btn) btn.classList.add("downloading");
-    if (dlItem) dlItem.classList.add("downloading");
-    if (dlSmall) dlSmall.textContent = "جاري...";
-
-    const ok = await Downloads.downloadOne(reciterId, surahNum, {
-      onProgress: (recv, total, done, err) => {
-        /* ⭐ لو فيه خطأ: أظهر "فشل" مش "جاري" */
-        if (err) {
-          if (dlSmall) dlSmall.textContent = "✗ فشل";
-          if (dlProg) { dlProg.style.width = "100%"; dlProg.style.background = "var(--rose)"; }
-          return;
-        }
-        if (total > 0) {
-          const pct = Math.min(100, Math.round((recv / total) * 100));
-          if (dlProg) dlProg.style.width = pct + "%";
-          if (dlSmall) dlSmall.textContent = done ? `✓ تم — ${fmtBytes(recv)}` : `جاري... ${pct}%`;
-        } else {
-          if (dlSmall) dlSmall.textContent = done ? `✓ تم — ${fmtBytes(recv)}` : "جاري...";
-        }
-      }
-    });
-
+    if (btn) btn.classList.add("downloading"); if (dlItem) dlItem.classList.add("downloading"); if (dlSmall) dlSmall.textContent = "جاري...";
+    const ok = await Downloads.downloadOne(reciterId, surahNum, { onProgress: (recv, total, done, err) => { if (err) { if (dlSmall) dlSmall.textContent = "✗ فشل"; if (dlProg) { dlProg.style.width = "100%"; dlProg.style.background = "var(--rose)"; } return; } if (total > 0) { const pct = Math.min(100, Math.round((recv / total) * 100)); if (dlProg) dlProg.style.width = pct + "%"; if (dlSmall) dlSmall.textContent = done ? `✓ تم — ${fmtBytes(recv)}` : `جاري... ${pct}%`; } else { if (dlSmall) dlSmall.textContent = done ? `✓ تم — ${fmtBytes(recv)}` : "جاري..."; } } });
     if (btn) btn.classList.remove("downloading");
-    if (dlItem) {
-      dlItem.classList.remove("downloading");
-      if (ok) {
-        dlItem.classList.remove("checked", "failed");
-        dlItem.classList.add("downloaded");
-        state._downloadSelection.delete(key);
-      } else {
-        dlItem.classList.add("failed");
-      }
-    }
+    if (dlItem) { dlItem.classList.remove("downloading"); if (ok) { dlItem.classList.remove("checked", "failed"); dlItem.classList.add("downloaded"); state._downloadSelection.delete(key); } else dlItem.classList.add("failed"); }
     UI.updateDownloadedBadges(); Downloads.updateBadge(); UI.updateMobileValues();
   },
-
-  updateBadge() {
-    const n = state.downloads.filter(d => d.reciterId === state.reciterId).length;
-    els.storageBadge.textContent = n;
-    els.storageBadge.classList.toggle("on", n > 0);
-  },
-
+  updateBadge() { const n = state.downloads.filter(d => d.reciterId === state.reciterId).length; els.storageBadge.textContent = n; els.storageBadge.classList.toggle("on", n > 0); },
   openModal() { state._downloadSelection.clear(); Downloads.renderList(); Downloads.updateSelectionUI(); openModal(els.downloadOverlay); },
   closeModal() { closeModal(els.downloadOverlay); },
-
-  renderList() {
-    const rec = RECITER_MAP.get(state.reciterId);
-    els.downloadReciterName.textContent = rec ? `— ${rec.name}` : "";
-    const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => d.surahNum));
-    els.dlList.innerHTML = SURAHS.map(s => {
-      const k = `${state.reciterId}-${s.number}`;
-      const has = ds.has(s.number);
-      const ch = state._downloadSelection.has(k);
-      return `<div class="dl-item ${has ? "downloaded" : ""} ${ch ? "checked" : ""}" data-key="${k}" data-num="${s.number}"><div class="dl-check"><svg viewBox="0 0 24 24">${has || ch ? ICONS.check : ""}</svg></div><span class="dl-num">${s.number}</span><div class="dl-info"><b>${esc(s.nameAr)}</b><small>${has ? "محمّلة ✓" : `${s.ayahs} آية · ${s.type}`}</small><div class="dl-progress"><i style="width:0%"></i></div></div></div>`;
-    }).join("");
-  },
-
-  updateSelectionUI() {
-    const n = state._downloadSelection.size;
-    els.dlCountPill.textContent = `${n} محددة`;
-    els.dlStartCount.textContent = n;
-    els.dlStartBtn.disabled = n === 0;
-    const as = SURAHS.map(s => `${state.reciterId}-${s.number}`);
-    const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => `${d.reciterId}-${d.surahNum}`));
-    const sel = as.filter(k => !ds.has(k));
-    els.dlSelectAll.checked = sel.length > 0 && sel.every(k => state._downloadSelection.has(k));
-  },
-
-  toggleSelection(num) {
-    const k = `${state.reciterId}-${num}`;
-    const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => d.surahNum));
-    if (ds.has(num)) return;
-    if (state._downloadSelection.has(k)) state._downloadSelection.delete(k);
-    else state._downloadSelection.add(k);
-    const item = els.dlList.querySelector(`.dl-item[data-num="${num}"]`);
-    if (item) item.classList.toggle("checked", state._downloadSelection.has(k));
-    const sv = item?.querySelector(".dl-check svg");
-    if (sv) sv.innerHTML = state._downloadSelection.has(k) ? ICONS.check : "";
-    Downloads.updateSelectionUI();
-  },
-
-  toggleSelectAll(ch) {
-    const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => d.surahNum));
-    state._downloadSelection.clear();
-    if (ch) SURAHS.forEach(s => { if (!ds.has(s.number)) state._downloadSelection.add(`${state.reciterId}-${s.number}`); });
-    Downloads.renderList();
-    Downloads.updateSelectionUI();
-  },
-
-  startSelected() {
-    if (!state._downloadSelection.size) return;
-    const items = Array.from(state._downloadSelection).map(k => {
-      const [r, s] = k.split("-").map(Number);
-      return { reciterId: r, surahNum: s };
-    });
-    const td = items.filter(it => !Downloads.isDownloaded(it.reciterId, it.surahNum));
-    if (!td.length) { toast("كل السور محمّلة"); return; }
-    Downloads.enqueue(td);
-    toast(`بدأ تحميل ${td.length} سورة`, "success");
-  },
+  renderList() { const rec = RECITER_MAP.get(state.reciterId); els.downloadReciterName.textContent = rec ? `— ${rec.name}` : ""; const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => d.surahNum)); els.dlList.innerHTML = SURAHS.map(s => { const k = `${state.reciterId}-${s.number}`; const has = ds.has(s.number); const ch = state._downloadSelection.has(k); return `<div class="dl-item ${has ? "downloaded" : ""} ${ch ? "checked" : ""}" data-key="${k}" data-num="${s.number}"><div class="dl-check"><svg viewBox="0 0 24 24">${has || ch ? ICONS.check : ""}</svg></div><span class="dl-num">${s.number}</span><div class="dl-info"><b>${esc(s.nameAr)}</b><small>${has ? "محمّلة ✓" : `${s.ayahs} آية · ${s.type}`}</small><div class="dl-progress"><i style="width:0%"></i></div></div></div>`; }).join(""); },
+  updateSelectionUI() { const n = state._downloadSelection.size; els.dlCountPill.textContent = `${n} محددة`; els.dlStartCount.textContent = n; els.dlStartBtn.disabled = n === 0; const as = SURAHS.map(s => `${state.reciterId}-${s.number}`); const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => `${d.reciterId}-${d.surahNum}`)); const sel = as.filter(k => !ds.has(k)); els.dlSelectAll.checked = sel.length > 0 && sel.every(k => state._downloadSelection.has(k)); },
+  toggleSelection(num) { const k = `${state.reciterId}-${num}`; const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => d.surahNum)); if (ds.has(num)) return; if (state._downloadSelection.has(k)) state._downloadSelection.delete(k); else state._downloadSelection.add(k); const item = els.dlList.querySelector(`.dl-item[data-num="${num}"]`); if (item) item.classList.toggle("checked", state._downloadSelection.has(k)); const sv = item?.querySelector(".dl-check svg"); if (sv) sv.innerHTML = state._downloadSelection.has(k) ? ICONS.check : ""; Downloads.updateSelectionUI(); },
+  toggleSelectAll(ch) { const ds = new Set(state.downloads.filter(d => d.reciterId === state.reciterId).map(d => d.surahNum)); state._downloadSelection.clear(); if (ch) SURAHS.forEach(s => { if (!ds.has(s.number)) state._downloadSelection.add(`${state.reciterId}-${s.number}`); }); Downloads.renderList(); Downloads.updateSelectionUI(); },
+  startSelected() { if (!state._downloadSelection.size) return; const items = Array.from(state._downloadSelection).map(k => { const [r, s] = k.split("-").map(Number); return { reciterId: r, surahNum: s }; }); const td = items.filter(it => !Downloads.isDownloaded(it.reciterId, it.surahNum)); if (!td.length) { toast("كل السور محمّلة"); return; } Downloads.enqueue(td); toast(`بدأ تحميل ${td.length} سورة`, "success"); },
 };
 
-/* ⭐ StoragePanel بتصميم أكورديون احترافي */
+function updatePrefetchUI() {
+  const s = Prefetcher.status();
+  const total = s.total || 798;
+  const pct = total > 0 ? Math.min(100, Math.round((s.done / total) * 100)) : 0;
+  if (els.prefetchBarFill) els.prefetchBarFill.style.width = pct + "%";
+  if (els.prefetchPercent) els.prefetchPercent.textContent = pct + "%";
+  if (els.prefetchText) els.prefetchText.textContent = `${s.done} / ${total}`;
+  if (els.prefetchFailed) els.prefetchFailed.textContent = s.failed > 0 ? `${s.failed} فشل` : "";
+  if (els.prefetchStatus) {
+    els.prefetchStatus.classList.remove("running", "complete", "paused", "error", "aborted");
+    let txt = "—";
+    if (s.phase === "complete") { txt = "✅ مكتمل"; els.prefetchStatus.classList.add("complete"); }
+    else if (s.phase === "running") { txt = "⏳ جاري"; els.prefetchStatus.classList.add("running"); }
+    else if (s.phase === "paused") { txt = "⏸ موقوف"; els.prefetchStatus.classList.add("paused"); }
+    else if (s.phase === "aborted") { txt = "⛔"; els.prefetchStatus.classList.add("aborted"); }
+    else if (s.phase === "error") { txt = "❌"; els.prefetchStatus.classList.add("error"); }
+    else { txt = "بانتظار"; }
+    els.prefetchStatus.textContent = txt;
+  }
+}
+
 const StoragePanel = {
-  open() { StoragePanel.render(); openModal(els.storageOverlay); StoragePanel.refreshEstimate(); },
+  open() { StoragePanel.render(); openModal(els.storageOverlay); StoragePanel.refreshEstimate(); updatePrefetchUI(); },
   close() { closeModal(els.storageOverlay); },
   async refreshEstimate() { if (!navigator.storage || !navigator.storage.estimate) { els.storageUsed.textContent = "—"; els.storageAvail.textContent = "—"; return; } try { const est = await navigator.storage.estimate(); const u = est.usage || 0, q = est.quota || 0; const pct = q > 0 ? Math.min(100, (u / q) * 100) : 0; els.storageBarFill.style.width = pct.toFixed(1) + "%"; els.storageUsed.textContent = fmtBytes(u); els.storageAvail.textContent = fmtBytes(Math.max(0, q - u)); } catch(_) { els.storageUsed.textContent = "—"; } },
   render() {
     const tot = state.downloads.reduce((a, d) => a + (d.size || 0), 0);
     const recs = new Set(state.downloads.map(d => d.reciterId));
-    els.storageCount.textContent = state.downloads.length;
-    els.storageReciters.textContent = recs.size;
-    els.storageTotal.textContent = fmtBytes(tot);
+    els.storageCount.textContent = state.downloads.length; els.storageReciters.textContent = recs.size; els.storageTotal.textContent = fmtBytes(tot);
     if (!state.downloads.length) { els.storageList.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24">${ICONS.folder}</svg><p>لم تحمّل أي سورة بعد</p></div>`; return; }
     const byR = new Map();
     state.downloads.forEach(d => { if (!byR.has(d.reciterId)) byR.set(d.reciterId, []); byR.get(d.reciterId).push(d); });
     const html = [];
-    byR.forEach((items, rid) => {
-      const rec = RECITER_MAP.get(rid);
-      const nm = rec ? rec.name : `قارئ #${rid}`;
-      const sz = items.reduce((a, d) => a + (d.size || 0), 0);
-      const sorted = items.slice().sort((a, b) => a.surahNum - b.surahNum);
-      html.push(`<div class="storage-reciter" data-rid="${rid}">
-        <button class="storage-reciter-head" type="button">
-          <svg class="srh-mic" viewBox="0 0 24 24">${ICONS.mic}</svg>
-          <div class="srh-info">
-            <b>${esc(nm)}</b>
-            <small>${items.length} ${items.length === 1 ? "سورة" : "سور"} · ${fmtBytes(sz)}</small>
-          </div>
-          <svg class="srh-chevron" viewBox="0 0 24 24">${ICONS.chevron}</svg>
-        </button>
-        <div class="storage-reciter-body">
-          ${sorted.map(d => { const s = SURAH_MAP.get(d.surahNum); return `<div class="storage-row" data-key="${d.key}" data-reciter="${rid}" data-surah="${d.surahNum}"><b>${s ? esc(s.nameAr) : d.surahNum}</b><span class="size">${fmtBytes(d.size)}</span><button class="storage-del" data-del="${d.key}" aria-label="حذف"><svg viewBox="0 0 24 24">${ICONS.trash}</svg></button></div>`; }).join("")}
-        </div>
-      </div>`);
-    });
+    byR.forEach((items, rid) => { const rec = RECITER_MAP.get(rid); const nm = rec ? rec.name : `قارئ #${rid}`; const sz = items.reduce((a, d) => a + (d.size || 0), 0); const sorted = items.slice().sort((a, b) => a.surahNum - b.surahNum); html.push(`<div class="storage-reciter" data-rid="${rid}"><button class="storage-reciter-head" type="button"><svg class="srh-mic" viewBox="0 0 24 24">${ICONS.mic}</svg><div class="srh-info"><b>${esc(nm)}</b><small>${items.length} ${items.length === 1 ? "سورة" : "سور"} · ${fmtBytes(sz)}</small></div><svg class="srh-chevron" viewBox="0 0 24 24">${ICONS.chevron}</svg></button><div class="storage-reciter-body">${sorted.map(d => { const s = SURAH_MAP.get(d.surahNum); return `<div class="storage-row" data-key="${d.key}" data-reciter="${rid}" data-surah="${d.surahNum}"><b>${s ? esc(s.nameAr) : d.surahNum}</b><span class="size">${fmtBytes(d.size)}</span><button class="storage-del" data-del="${d.key}" aria-label="حذف"><svg viewBox="0 0 24 24">${ICONS.trash}</svg></button></div>`; }).join("")}</div></div>`); });
     els.storageList.innerHTML = html.join("");
   },
 };
+
+let _sleepIntervalId = null;
+function startSleepTick() { if (_sleepIntervalId) return; _sleepIntervalId = setInterval(Sleep.tick, 1000); }
+function stopSleepTick() { if (_sleepIntervalId) { clearInterval(_sleepIntervalId); _sleepIntervalId = null; } }
 
 const Sleep = {
   open() { if (state.sleep.active) { const r = Math.max(0, state.sleep.endsAt - Date.now()); const h = Math.floor(r / 3600000); const m = Math.round((r % 3600000) / 60000); els.sleepHours.value = h > 0 ? h : ""; els.sleepMinutes.value = m > 0 ? m : ""; } else { els.sleepHours.value = ""; els.sleepMinutes.value = ""; } Sleep.updateActiveInfo(); Sleep.updatePresetHighlight(); openModal(els.sleepOverlay); },
   close() { closeModal(els.sleepOverlay); },
   updateActiveInfo() { if (state.sleep.active) { els.sleepActiveInfo.classList.add("on"); const r = Math.max(0, state.sleep.endsAt - Date.now()); els.sleepActiveText.textContent = `المؤقت شغال — متبقي: ${fmtTime(r / 1000)}`; } else els.sleepActiveInfo.classList.remove("on"); },
   updatePresetHighlight() { const h = parseInt(els.sleepHours.value, 10) || 0; const m = parseInt(els.sleepMinutes.value, 10) || 0; const t = h * 60 + m; $$("#sleepPresets button").forEach(b => b.classList.toggle("active", t > 0 && parseInt(b.dataset.min, 10) === t)); },
-  start() { let h = els.sleepHours.value.trim() === "" ? 0 : parseInt(els.sleepHours.value, 10); let m = els.sleepMinutes.value.trim() === "" ? 0 : parseInt(els.sleepMinutes.value, 10); if (!isFinite(h)) h = 0; if (!isFinite(m)) m = 0; h = clamp(h, 0, 12); m = clamp(m, 0, 59); const tm = (h * 60 + m) * 60 * 1000; if (tm <= 0) { toast("⚠️ حدد مدة", "error"); return; } state.sleep.active = true; state.sleep.endsAt = Date.now() + tm; Sleep.tick(); Sleep.updateActiveInfo(); UI.timerChip(); UI.updateMobileValues(); saveSoon(); toast(`المؤقت: ${h > 0 ? h + " س " : ""}${m > 0 ? m + " د" : ""}`, "success"); Sleep.close(); },
-  cancel() { if (!state.sleep.active) { Sleep.close(); return; } state.sleep.active = false; state.sleep.endsAt = 0; UI.timerChip(); Sleep.updateActiveInfo(); UI.updateMobileValues(); saveSoon(); toast("تم الإلغاء"); Sleep.close(); },
-  tick() { if (!state.sleep.active) return; const r = state.sleep.endsAt - Date.now(); if (r <= 0) { state.sleep.active = false; state.sleep.endsAt = 0; Audio.pause(); UI.timerChip(); UI.updateMobileValues(); toast("انتهى المؤقت", "success"); saveSoon(); return; } const s = Math.max(0, Math.round(r / 1000)); const h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60; const p = v => String(v).padStart(2, "0"); els.timerChip.textContent = h > 0 ? `${h}:${p(mm)}:${p(ss)}` : `${mm}:${p(ss)}`; if (els.sleepOverlay.classList.contains("on")) Sleep.updateActiveInfo(); if (els.mobileSidebar && els.mobileSidebar.classList.contains("on") && els.msSleepValue) els.msSleepValue.textContent = h > 0 ? `${h}:${p(mm)}:${p(ss)}` : `${mm}:${p(ss)}`; },
+  start() { let h = els.sleepHours.value.trim() === "" ? 0 : parseInt(els.sleepHours.value, 10); let m = els.sleepMinutes.value.trim() === "" ? 0 : parseInt(els.sleepMinutes.value, 10); if (!isFinite(h)) h = 0; if (!isFinite(m)) m = 0; h = clamp(h, 0, 12); m = clamp(m, 0, 59); const tm = (h * 60 + m) * 60 * 1000; if (tm <= 0) { toast("⚠️ حدد مدة", "error"); return; } state.sleep.active = true; state.sleep.endsAt = Date.now() + tm; Sleep.tick(); Sleep.updateActiveInfo(); UI.timerChip(); UI.updateMobileValues(); startSleepTick(); saveSoon(); toast(`المؤقت: ${h > 0 ? h + " س " : ""}${m > 0 ? m + " د" : ""}`, "success"); Sleep.close(); },
+  cancel() { if (!state.sleep.active) { Sleep.close(); return; } state.sleep.active = false; state.sleep.endsAt = 0; stopSleepTick(); UI.timerChip(); Sleep.updateActiveInfo(); UI.updateMobileValues(); saveSoon(); toast("تم الإلغاء"); Sleep.close(); },
+  tick() { if (!state.sleep.active) { stopSleepTick(); return; } const r = state.sleep.endsAt - Date.now(); if (r <= 0) { state.sleep.active = false; state.sleep.endsAt = 0; stopSleepTick(); Audio.pause(); UI.timerChip(); UI.updateMobileValues(); toast("انتهى المؤقت", "success"); saveSoon(); return; } const s = Math.max(0, Math.round(r / 1000)); const h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60; const p = v => String(v).padStart(2, "0"); els.timerChip.textContent = h > 0 ? `${h}:${p(mm)}:${p(ss)}` : `${mm}:${p(ss)}`; if (els.sleepOverlay.classList.contains("on")) Sleep.updateActiveInfo(); if (els.mobileSidebar && els.mobileSidebar.classList.contains("on")) UI.updateMobileValues(); },
 };
-setInterval(Sleep.tick, 1000);
 
 function openModal(el) { el.classList.add("on"); document.body.style.overflow = "hidden"; }
 function closeModal(el) { el.classList.remove("on"); if (!$$(".modal-overlay.on").length && !els.drawer.classList.contains("on") && !els.mobileSidebar.classList.contains("on")) document.body.style.overflow = ""; }
@@ -1190,61 +1341,55 @@ function bindDrag(el, onR) {
   const dn = (e) => { d = true; el.classList.add("dragging"); onR(r(e)); e.preventDefault(); };
   const mv = (e) => { if (d) onR(r(e)); };
   const up = () => { d = false; el.classList.remove("dragging"); };
-  el.addEventListener("mousedown", dn);
-  el.addEventListener("touchstart", dn, { passive: false });
-  window.addEventListener("mousemove", mv, { passive: true });
-  window.addEventListener("touchmove", mv, { passive: false });
-  window.addEventListener("mouseup", up, { passive: true });
-  window.addEventListener("touchend", up, { passive: true });
-  window.addEventListener("touchcancel", up, { passive: true });
+  el.addEventListener("mousedown", dn); el.addEventListener("touchstart", dn, { passive: false });
+  window.addEventListener("mousemove", mv, { passive: true }); window.addEventListener("touchmove", mv, { passive: false });
+  window.addEventListener("mouseup", up, { passive: true }); window.addEventListener("touchend", up, { passive: true }); window.addEventListener("touchcancel", up, { passive: true });
 }
-bindDrag(els.seek, (r) => {
-  const t = els.audio.duration;
-  els.seekFill.style.transform = `scaleX(${r})`;
-  els.seekThumb.style.left = (r * 100).toFixed(3) + "%";
-  if (isFinite(t) && t > 0) {
-    els.timeCur.textContent = fmtTime(r * t);
-    Audio.seekTo(r * t);
-    state._pendingResume = { time: r * t, wasPlaying: state.playing };
-  } else {
-    state._pendingResume = { ratio: r, wasPlaying: state.playing, time: 0 };
-  }
-});
+
+(function setupSeekDrag() {
+  let dragging = false, wasPlayingBeforeDrag = false, pendingRatio = 0;
+  const ratioFromEvent = (e) => { const rc = els.seek.getBoundingClientRect(); const x = e.touches ? e.touches[0].clientX : e.clientX; return clamp((x - rc.left) / rc.width, 0, 1); };
+  const preview = (r) => { els.seekFill.style.transform = `scaleX(${r})`; els.seekThumb.style.left = (r * 100).toFixed(3) + "%"; const dur = els.audio.duration; if (isFinite(dur) && dur > 0) els.timeCur.textContent = fmtTime(r * dur); };
+  const onStart = (e) => { dragging = true; wasPlayingBeforeDrag = state._playIntent; els.seek.classList.add("dragging"); pendingRatio = ratioFromEvent(e); preview(pendingRatio); e.preventDefault(); };
+  const onMove = (e) => { if (!dragging) return; pendingRatio = ratioFromEvent(e); preview(pendingRatio); };
+  const onEnd = () => {
+    if (!dragging) return; dragging = false; els.seek.classList.remove("dragging");
+    const dur = els.audio.duration;
+    if (isFinite(dur) && dur > 0) {
+      const target = pendingRatio * dur;
+      try { els.audio.currentTime = target; state.currentTime = target; } catch(_){}
+      if (wasPlayingBeforeDrag && els.audio.paused) {
+        state._playIntent = true;
+        const p = els.audio.play(); if (p && p.catch) p.catch(() => {});
+      }
+      if (!navigator.onLine) OfflineResume.updateSeek(target);
+    } else if (state._lastKnownDuration > 0) {
+      const target = pendingRatio * state._lastKnownDuration;
+      state.currentTime = target;
+      if (!navigator.onLine) OfflineResume.updateSeek(target);
+    }
+    safeSave();
+  };
+  els.seek.addEventListener("mousedown", onStart); els.seek.addEventListener("touchstart", onStart, { passive: false });
+  window.addEventListener("mousemove", onMove, { passive: true }); window.addEventListener("touchmove", onMove, { passive: false });
+  window.addEventListener("mouseup", onEnd, { passive: true }); window.addEventListener("touchend", onEnd, { passive: true }); window.addEventListener("touchcancel", onEnd, { passive: true });
+})();
 bindDrag(els.volSlider, (r) => Audio.setVolume(r));
 
-/* ══════════ Mobile Sidebar ══════════ */
-function openMobileSidebar() {
-  UI.updateMobileValues();
-  els.mobileSidebar.classList.add("on");
-  els.mobileOverlay.classList.add("on");
-  els.mobileSidebar.setAttribute("aria-hidden", "false");
-  document.body.style.overflow = "hidden";
-}
-function closeMobileSidebar() {
-  els.mobileSidebar.classList.remove("on");
-  els.mobileOverlay.classList.remove("on");
-  els.mobileSidebar.setAttribute("aria-hidden", "true");
-  if (!$$(".modal-overlay.on").length && !els.drawer.classList.contains("on")) document.body.style.overflow = "";
-}
+function openMobileSidebar() { UI.updateMobileValues(); els.mobileSidebar.classList.add("on"); els.mobileOverlay.classList.add("on"); els.mobileSidebar.setAttribute("aria-hidden", "false"); document.body.style.overflow = "hidden"; }
+function closeMobileSidebar() { els.mobileSidebar.classList.remove("on"); els.mobileOverlay.classList.remove("on"); els.mobileSidebar.setAttribute("aria-hidden", "true"); if (!$$(".modal-overlay.on").length && !els.drawer.classList.contains("on")) document.body.style.overflow = ""; }
 els.mobileMenuBtn.addEventListener("click", openMobileSidebar);
 els.mobileSidebarClose.addEventListener("click", closeMobileSidebar);
 els.mobileOverlay.addEventListener("click", closeMobileSidebar);
 
 document.querySelectorAll('.ms-item[data-trigger]').forEach(btn => {
   btn.addEventListener('click', () => {
-    const targetId = btn.dataset.trigger;
-    const target = document.getElementById(targetId);
-    if (targetId === "reciterBtn") {
-      closeMobileSidebar();
-      setTimeout(() => { if (target) target.click(); }, 180);
-    } else {
-      closeMobileSidebar();
-      setTimeout(() => { if (target) target.click(); }, 220);
-    }
+    const targetId = btn.dataset.trigger; const target = document.getElementById(targetId);
+    closeMobileSidebar();
+    setTimeout(() => { if (target) target.click(); }, targetId === "reciterBtn" ? 180 : 220);
   });
 });
 
-/* ══════════ Event Wiring ══════════ */
 els.themeBtn.addEventListener("click", () => { const n = Theme.toggle(); UI.updateMobileValues(); toast(n === "light" ? "☀️ نهاري" : "🌙 ليلي"); });
 els.reciterBtn.addEventListener("click", (e) => { e.stopPropagation(); RecitersUI.toggle(); });
 els.reciterSearchInput.addEventListener("input", (e) => RecitersUI.renderList(e.target.value));
@@ -1252,31 +1397,38 @@ els.reciterList.addEventListener("click", (e) => { const it = e.target.closest("
 document.addEventListener("click", (e) => { if (!els.reciterDropdown.classList.contains("on")) return; if (e.target.closest(".reciter-wrap")) return; if (e.target.closest(".reciter-dropdown")) return; RecitersUI.close(); });
 els.storageBtn.addEventListener("click", () => StoragePanel.open());
 els.storageCloseBtn.addEventListener("click", () => StoragePanel.close());
-els.storageClearAll.addEventListener("click", async () => { if (!state.downloads.length) { toast("لا توجد سور"); return; } if (!confirm("سيتم حذف جميع السور المحمّلة + التوقيتات + النصوص. متأكد؟")) return; await Downloads.clearAll(); StoragePanel.render(); StoragePanel.refreshEstimate(); Downloads.updateBadge(); toast("تم المسح", "success"); });
 
-/* ⭐ StoragePanel click handler: حذف + أكورديون */
+els.storageClearAll.addEventListener("click", async () => {
+  const hasDownloads = state.downloads.length > 0;
+  const hasPrefetch = Prefetcher._progress.done > 0;
+  if (!hasDownloads && !hasPrefetch) { toast("لا توجد بيانات"); return; }
+  if (!confirm("سيتم حذف جميع البيانات المحمّلة (سور + توقيتات + نصوص). متأكد؟")) return;
+  await Downloads.clearAll();
+  Prefetcher.abort();
+  Prefetcher._progress = { done: 0, total: 798, failed: 0, phase: "idle" };
+  Prefetcher._clearState();
+  updatePrefetchUI();
+  StoragePanel.render();
+  StoragePanel.refreshEstimate();
+  Downloads.updateBadge();
+  toast("تم المسح", "success");
+  if (navigator.onLine) setTimeout(() => Prefetcher.run(), 500);
+});
+
+if (els.prefetchClear) {
+  els.prefetchClear.addEventListener("click", async () => {
+    if (!confirm("سيتم مسح كل التوقيتات والنصوص. هتتحمل تلقائيًا من جديد. متأكد؟")) return;
+    await Prefetcher.clearAll();
+    updatePrefetchUI();
+    if (navigator.onLine) setTimeout(() => Prefetcher.run(), 400);
+  });
+}
+
 els.storageList.addEventListener("click", async (e) => {
   const delBtn = e.target.closest("[data-del]");
-  if (delBtn) {
-    e.stopPropagation();
-    const row = delBtn.closest(".storage-row");
-    if (!row) return;
-    const sNum = Number(row.dataset.surah);
-    const rId = Number(row.dataset.reciter);
-    const sName = SURAH_MAP.get(sNum)?.nameAr || "";
-    const rName = RECITER_MAP.get(rId)?.name || "";
-    if (!confirm(`حذف سورة ${sName} من ${rName}؟`)) return;
-    await Downloads.deleteOne(rId, sNum);
-    StoragePanel.render(); StoragePanel.refreshEstimate(); Downloads.updateBadge(); UI.updateMobileValues();
-    toast(`حُذفت ${sName}`, "success");
-    return;
-  }
+  if (delBtn) { e.stopPropagation(); const row = delBtn.closest(".storage-row"); if (!row) return; const sNum = Number(row.dataset.surah), rId = Number(row.dataset.reciter); const sName = SURAH_MAP.get(sNum)?.nameAr || "", rName = RECITER_MAP.get(rId)?.name || ""; if (!confirm(`حذف سورة ${sName} من ${rName}؟`)) return; await Downloads.deleteOne(rId, sNum); StoragePanel.render(); StoragePanel.refreshEstimate(); Downloads.updateBadge(); UI.updateMobileValues(); toast(`حُذفت ${sName}`, "success"); return; }
   const head = e.target.closest(".storage-reciter-head");
-  if (head) {
-    const group = head.closest(".storage-reciter");
-    if (group) group.classList.toggle("expanded");
-    return;
-  }
+  if (head) { const group = head.closest(".storage-reciter"); if (group) group.classList.toggle("expanded"); return; }
 });
 
 els.downloadBtn.addEventListener("click", () => Downloads.openModal());
@@ -1286,35 +1438,20 @@ els.dlList.addEventListener("click", (e) => { const it = e.target.closest(".dl-i
 els.dlStartBtn.addEventListener("click", () => Downloads.startSelected());
 els.grid.addEventListener("click", (e) => {
   const dl = e.target.closest('[data-act="download"]');
-  if (dl) {
-    e.stopPropagation();
-    const n = Number(dl.dataset.num);
-    const key = `${state.reciterId}-${n}`;
-    /* ⭐ لو التحميل شغال → إلغاء */
-    if (Downloads.isDownloading(key)) {
-      Downloads.cancel(key);
-      return;
-    }
-    /* محمّلة → حذف */
-    if (Downloads.isDownloaded(state.reciterId, n)) {
-      if (confirm(`سورة ${SURAH_MAP.get(n).nameAr} محمّلة. حذفها؟`)) {
-        Downloads.deleteOne(state.reciterId, n).then(() => {
-          toast(`حُذفت`, "success");
-          StoragePanel.render && StoragePanel.render();
-        });
-      }
-      return;
-    }
-    /* تحميل جديد */
-    Downloads.enqueue([{ reciterId: state.reciterId, surahNum: n }]);
-    toast(`بدأ تحميل ${SURAH_MAP.get(n).nameAr}`, "success");
-    return;
+  if (dl) { e.stopPropagation(); const n = Number(dl.dataset.num); const key = `${state.reciterId}-${n}`;
+    if (Downloads.isDownloading(key)) { Downloads.cancel(key); return; }
+    if (Downloads.isDownloaded(state.reciterId, n)) { if (confirm(`سورة ${SURAH_MAP.get(n).nameAr} محمّلة. حذفها؟`)) { Downloads.deleteOne(state.reciterId, n).then(() => { toast(`حُذفت`, "success"); StoragePanel.render && StoragePanel.render(); }); } return; }
+    Downloads.enqueue([{ reciterId: state.reciterId, surahNum: n }]); toast(`بدأ تحميل ${SURAH_MAP.get(n).nameAr}`, "success"); return;
   }
   const add = e.target.closest('[data-act="add"]'); if (add) { e.stopPropagation(); Queue.toggle(Number(add.dataset.num)); return; }
   const c = e.target.closest(".card"); if (!c) return; const n = Number(c.dataset.num); if (state.current === n && state.mode === "seq") { Audio.toggle(); return; } Player.playSurah(n);
 });
 els.grid.addEventListener("keydown", (e) => { if (e.key !== "Enter" && e.key !== " ") return; const c = e.target.closest(".card"); if (!c) return; e.preventDefault(); c.click(); });
-els.playBtn.addEventListener("click", () => { if (!state.current) { Player.playSurah(1); return; } Audio.toggle(); });
+
+els.playBtn.addEventListener("click", () => {
+  if (!state.current) { Player.playSurah(1); return; }
+  Audio.toggle();
+});
 els.prevBtn.addEventListener("click", () => Player.prev());
 els.nextBtn.addEventListener("click", () => Player.next());
 els.shuffleBtn.addEventListener("click", () => { state.shuffle = !state.shuffle; UI.shuffle(); saveSoon(); toast(state.shuffle ? "الخلط مُفعّل" : "الخلط مُعطّل"); });
@@ -1352,7 +1489,6 @@ els.rpStartSelect.addEventListener("change", () => els.rpStartField.classList.re
 els.rpEndSelect.addEventListener("change", () => { const ef = els.rpEndSelect.closest(".rp-field"); if (ef) ef.classList.remove("error"); });
 els.rpDurHours.addEventListener("input", () => els.rpDurHoursCell.classList.remove("error"));
 els.rpDurMinutes.addEventListener("input", () => els.rpDurMinutesCell.classList.remove("error"));
-/* ⭐ زر "نفس السورة كاملة" */
 if (els.rpSameSurah) els.rpSameSurah.addEventListener("click", () => Range.toggleSameSurah());
 els.sleepBtn.addEventListener("click", Sleep.open);
 els.sleepStart.addEventListener("click", Sleep.start);
@@ -1362,14 +1498,11 @@ els.sleepHours.addEventListener("input", Sleep.updatePresetHighlight);
 els.sleepMinutes.addEventListener("input", Sleep.updatePresetHighlight);
 document.addEventListener("click", (e) => { const cb = e.target.closest("[data-close]"); if (cb) { const el = document.getElementById(cb.dataset.close); if (el) closeModal(el); return; } if (e.target.classList.contains("modal-overlay")) closeModal(e.target); });
 
-let _rafPending = false;
-function scheduleUIUpdate() { if (_rafPending) return; _rafPending = true; requestAnimationFrame(() => { _rafPending = false; UI.progress(); Subtitle.update(); }); }
-
 els.audio.addEventListener("loadedmetadata", () => {
   els.audio.playbackRate = state.speed; els.audio.volume = state.volume; els.audio.muted = state.volume === 0;
+  if (isFinite(els.audio.duration) && els.audio.duration > 0) state._lastKnownDuration = els.audio.duration;
   clearSilentSwitch();
-  const dur = els.audio.duration;
-  let target = 0;
+  const dur = els.audio.duration; let target = 0;
   if (state.range.active && state.range.openEnded && state.current === state.range.surah) { const ok = state.currentTime > 0.5 && state.currentTime < dur - 0.5; const inR = ok && state.currentTime >= state.range.startTime; target = inR ? state.currentTime : state.range.startTime; }
   else if (state.range.active && state.range.crossSurah) { if (state.range.phase === "leg1" && state.current === state.range.surah) { const ok = state.currentTime > 0.5 && state.currentTime < dur - 0.5; const inR = ok && state.currentTime >= state.range.startTime; target = inR ? state.currentTime : state.range.startTime; } else if (state.range.phase === "leg2" && state.current === state.range.endSurah) { const ok = state.currentTime > 0.5 && state.currentTime < state.range.endTime - 0.5; target = ok ? state.currentTime : 0; } }
   else if (state.range.active && state.current === state.range.surah && !state.range.openEnded) { const ok = state.currentTime > 0.5 && state.currentTime < dur - 0.5; const inR = ok && state.currentTime >= state.range.startTime && state.currentTime < state.range.endTime - 0.5; target = inR ? state.currentTime : state.range.startTime; }
@@ -1378,30 +1511,44 @@ els.audio.addEventListener("loadedmetadata", () => {
   UI._markerRenderKey = null;
   UI.renderAyahMarkers(); UI.progress(); UI.rangeMarkers();
   Subtitle.currentKey = null; Subtitle.update();
-  if (state.range.active && !state.range.openEnded && !els.audio.paused) startRangeWatch();
+  if (state.range.active && !state.range.openEnded && state._playIntent) startRangeWatch();
 });
 
 els.audio.addEventListener("timeupdate", () => {
-  if (state.current && !els.audio.paused) state.currentTime = els.audio.currentTime;
-  if (state.range.active && !state.range.openEnded && !els.audio.paused && state.current === state.range.surah) {
+  if (state.current && state._playIntent) state.currentTime = els.audio.currentTime;
+  if (state.range.active && !state.range.openEnded && state._playIntent && state.current === state.range.surah && !state._tabVisible) {
     if (els.audio.currentTime >= state.range.endTime) {
-      try { els.audio.pause(); } catch(_){}
-      try { els.audio.currentTime = state.range.endTime; } catch(_){}
+      try { els.audio.pause(); } catch(_) {}
+      try { els.audio.currentTime = state.range.endTime; } catch(_) {}
       handleRangeEnd();
       return;
     }
   }
-  scheduleUIUpdate();
+  Subtitle.update();
+  if (!state._tabVisible) UI.progress();
 });
 
-els.audio.addEventListener("durationchange", () => { UI._markerRenderKey = null; UI.progress(); UI.rangeMarkers(); });
+els.audio.addEventListener("durationchange", () => { if (isFinite(els.audio.duration) && els.audio.duration > 0) state._lastKnownDuration = els.audio.duration; UI._markerRenderKey = null; UI.progress(); UI.rangeMarkers(); });
 els.audio.addEventListener("play", () => {
-  state.playing = true; state._restoredFromSaved = false;
+  state.playing = true;
+  state._restoredFromSaved = false;
   UI.nowPlaying(); UI.updatePlayingCard(); UI.updateResumeCard(); UI.updateQueuePlayButtons();
   if (state.range.active && !state.range.openEnded) startRangeWatch();
   Subtitle.onPlay();
+  startRafLoop();
+  if (!navigator.onLine) OfflineResume.updatePlayState(true);
 });
-els.audio.addEventListener("pause", () => { state.playing = false; UI.nowPlaying(); UI.updatePlayingCard(); UI.updateQueuePlayButtons(); stopRangeWatch(); });
+els.audio.addEventListener("pause", () => {
+  state.playing = false;
+  stopRafLoop();
+  UI.nowPlaying(); UI.updatePlayingCard(); UI.updateQueuePlayButtons(); stopRangeWatch();
+  if (state.current && !_silentSwitch) {
+    state.currentTime = els.audio.currentTime || 0;
+    state._lastSavedTime = state.currentTime;
+    Store.save(state);
+    if (!navigator.onLine) OfflineResume.updatePlayState(false);
+  }
+});
 els.audio.addEventListener("ended", () => {
   if (state.range.active && state.range.crossSurah && state.range.phase === "leg1" && state.current === state.range.surah) { transitionToLeg2(); return; }
   if (state.range.active && state.range.crossSurah && state.range.phase === "leg2" && state.current === state.range.endSurah) { handleRangeEnd(); return; }
@@ -1409,18 +1556,21 @@ els.audio.addEventListener("ended", () => {
   if (state.repeat === "one" && state.current) { els.audio.currentTime = 0; Audio.play(); return; }
   Player.next();
 });
-els.audio.addEventListener("error", () => { if (_silentSwitch || !els.audio.src || !state.current) return; const err = els.audio.error; if (err && err.code === 4 && _audioLoadId === 0) return; const lock = _audioLoadId; setTimeout(() => { if (_audioLoadId !== lock || _silentSwitch) return; const s = SURAH_MAP.get(state.current); if (!s) return; toast(`تعذّر تشغيل ${s.nameAr}`, "error"); }, 300); });
+els.audio.addEventListener("error", () => {
+  if (!navigator.onLine && state.current && !_silentSwitch) {
+    if (!OfflineResume._read()) OfflineResume.save("audio-error-offline");
+  }
+  if (_silentSwitch || !els.audio.src || !state.current) return;
+  const err = els.audio.error;
+  if (err && err.code === 4 && _audioLoadId === 0) return;
+  if (!navigator.onLine) return;
+  const lock = _audioLoadId;
+  setTimeout(() => { if (_audioLoadId !== lock || _silentSwitch) return; const s = SURAH_MAP.get(state.current); if (!s) return; toast(`تعذّر تشغيل ${s.nameAr}`, "error"); }, 300);
+});
 
 document.addEventListener("keydown", (e) => {
-  const tag = (e.target && e.target.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-  if (e.code === "Escape") {
-    if (els.mobileSidebar.classList.contains("on")) { closeMobileSidebar(); return; }
-    if (RecitersUI.isOpen()) { RecitersUI.close(); return; }
-    const om = $(".modal-overlay.on"); if (om) { closeModal(om); return; }
-    if (Range.isOpen()) { Range.close(); return; }
-    closeDrawer(); return;
-  }
+  const tag = (e.target && e.target.tagName) || ""; if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (e.code === "Escape") { if (els.mobileSidebar.classList.contains("on")) { closeMobileSidebar(); return; } if (RecitersUI.isOpen()) { RecitersUI.close(); return; } const om = $(".modal-overlay.on"); if (om) { closeModal(om); return; } if (Range.isOpen()) { Range.close(); return; } closeDrawer(); return; }
   if ($(".modal-overlay.on")) return;
   if (RecitersUI.isOpen()) return;
   switch (e.code) {
@@ -1454,11 +1604,8 @@ async function init() {
     if (typeof saved.qIndex === "number") state.qIndex = saved.qIndex;
     if (saved.mode === "queue" || saved.mode === "seq") state.mode = saved.mode;
     if (saved.reciterId && RECITER_MAP.has(saved.reciterId)) state.reciterId = saved.reciterId;
-    if (saved.range && saved.range.surah && SURAH_MAP.has(saved.range.surah)) {
-      let ph = "leg1"; if (saved.range.crossSurah && saved.current === saved.range.endSurah) ph = "leg2";
-      state.range = { active: true, surah: saved.range.surah, endSurah: saved.range.endSurah || saved.range.surah, crossSurah: !!saved.range.crossSurah, phase: ph, mode: saved.range.mode || "ayah", startAyah: saved.range.startAyah || 1, endAyah: saved.range.endAyah || null, startTime: saved.range.startTime || 0, endTime: saved.range.endTime || 0, _pendingMode: saved.range.mode || "ayah", estimated: !!saved.range.estimated, openEnded: !!saved.range.openEnded, repeatCount: (saved.range.repeatCount >= 1 ? saved.range.repeatCount : 1), repeatIndex: saved.range.repeatIndex || 0, sameSurah: !!saved.range.sameSurah };
-    }
-    if (saved.sleep && saved.sleep.endsAt && saved.sleep.endsAt > Date.now()) { state.sleep.active = true; state.sleep.endsAt = saved.sleep.endsAt; }
+    if (saved.range && saved.range.surah && SURAH_MAP.has(saved.range.surah)) { let ph = "leg1"; if (saved.range.crossSurah && saved.current === saved.range.endSurah) ph = "leg2"; state.range = { active: true, surah: saved.range.surah, endSurah: saved.range.endSurah || saved.range.surah, crossSurah: !!saved.range.crossSurah, phase: ph, mode: saved.range.mode || "ayah", startAyah: saved.range.startAyah || 1, endAyah: saved.range.endAyah || null, startTime: saved.range.startTime || 0, endTime: saved.range.endTime || 0, _pendingMode: saved.range.mode || "ayah", estimated: !!saved.range.estimated, openEnded: !!saved.range.openEnded, repeatCount: (saved.range.repeatCount >= 1 ? saved.range.repeatCount : 1), repeatIndex: saved.range.repeatIndex || 0, sameSurah: !!saved.range.sameSurah }; }
+    if (saved.sleep && saved.sleep.endsAt && saved.sleep.endsAt > Date.now()) { state.sleep.active = true; state.sleep.endsAt = saved.sleep.endsAt; startSleepTick(); }
     syncQueueIndex();
   }
   RecitersUI.renderList("");
@@ -1476,68 +1623,116 @@ async function init() {
   const rn = saved && saved.current && SURAH_MAP.has(saved.current) ? saved.current : state.lastPlayed;
   if (rn && SURAH_MAP.has(rn)) {
     state.current = rn; state.playing = false;
+    setLoadedSource(state.reciterId, rn);
     try { els.audio.src = resolveSurahSrc(state.reciterId, rn); els.audio.load(); } catch(_){}
     if (state.currentTime > 1) state._restoredFromSaved = true;
     TextAPI.fetch(rn).catch(() => {});
-    if (!TimingsAPI.isDisabled(state.reciterId) && !TimingsAPI.has(state.reciterId, rn)) {
-      TimingsAPI.fetch(state.reciterId, rn).then(() => { UI._markerRenderKey = null; UI.renderAyahMarkers(); Subtitle.currentKey = null; Subtitle.update(); }).catch(() => {});
-    }
+    if (!TimingsAPI.isDisabled(state.reciterId) && !TimingsAPI.has(state.reciterId, rn)) { TimingsAPI.fetch(state.reciterId, rn).then(() => { UI._markerRenderKey = null; UI.renderAyahMarkers(); Subtitle.currentKey = null; Subtitle.update(); }).catch(() => {}); }
     UI.updatePlayingCard(); UI.updateResumeCard(); Range.syncUI(); UI.nowPlaying(); UI.phaseNotice(); UI.updateQueuePlayButtons();
   } else { state._restoredFromSaved = false; UI.nowPlaying(); }
 
-  setTimeout(() => {
-    if (state._restoredFromSaved) toast(`▶ جاهز للاستئناف`, "success");
-    else toast(`جاهز ✓`, "success");
-  }, 800);
+  setTimeout(() => { if (state._restoredFromSaved) toast(`▶ جاهز للاستئناف`, "success"); else toast(`جاهز ✓`, "success"); }, 800);
 
-   window.addEventListener("online", () => {
-    toast("🌐 عاد الاتصال", "info");
-    /* ⭐ استئناف التشغيل لو كان فيه صوت معلّق بسبب قطع الاتصال */
-    if (state._pendingResume && state.current) {
-      const resumeAt = state._pendingResume.time || 0;
-      const wasPlaying = state._pendingResume.wasPlaying;
-      state._pendingResume = null;
-      const isDownloaded = Downloads.isDownloaded(state.reciterId, state.current);
-      if (!isDownloaded) {
-        try {
-          const newSrc = getSurahUrl(state.reciterId, state.current);
-          if (els.audio.src !== newSrc) {
-            els.audio.src = newSrc;
-            els.audio.load();
-          }
-          const onMeta = () => {
-            els.audio.removeEventListener("loadedmetadata", onMeta);
-            const dur = els.audio.duration;
-            const target = (isFinite(dur) && dur > 0) ? Math.min(resumeAt, dur - 0.5) : resumeAt;
-            try { els.audio.currentTime = target; state.currentTime = target; } catch(_){}
-            if (wasPlaying) Audio.play();
-            UI.progress();
-          };
-          if (isFinite(els.audio.duration) && els.audio.duration > 0) onMeta();
-          else els.audio.addEventListener("loadedmetadata", onMeta);
-        } catch(_) {}
+  Prefetcher.setProgressCallback(updatePrefetchUI);
+  setTimeout(async () => {
+    console.log('[Prefetcher] autostart check | online:', navigator.onLine);
+    try {
+      if (!navigator.onLine) { console.warn('[Prefetcher] offline — will retry on online event'); return; }
+      const complete = await Prefetcher.isComplete();
+      console.log('[Prefetcher] isComplete =', complete);
+      if (!complete) {
+        console.log('[Prefetcher] starting run()...');
+        Prefetcher.run();
+      } else {
+        const tk = await IDB.getAllTimingKeys();
+        const xk = await IDB.getAllTextKeys();
+        console.log('[Prefetcher] already complete:', tk.length, 'timings,', xk.length, 'texts');
+        Prefetcher._progress = { done: tk.length + xk.length, total: 798, failed: 0, phase: "complete" };
+        updatePrefetchUI();
       }
+    } catch(e) {
+      console.error('[Prefetcher] autostart failed:', e);
+    }
+  }, CONFIG.PREFETCH_AUTOSTART_DELAY_MS);
+
+  /* ⭐ لو فيه OfflineResume معلّق */
+  const pendingOffline = OfflineResume._read();
+  if (pendingOffline && state.current && pendingOffline.sn === state.current && pendingOffline.rid === state.reciterId) {
+    if (navigator.onLine) {
+      setTimeout(() => OfflineResume.restore("init"), 1000);
+    } else {
+      state.currentTime = pendingOffline.time || state.currentTime;
+      state._playIntent = false;
+      UI.progress();
+      Subtitle.currentKey = null;
+      Subtitle.update();
+      /* ⭐ v31.3: بدون polling — نعتمد على online event */
+    }
+  }
+
+  /* ⭐ online — استعادة تلقائية + استئناف الـ Prefetcher */
+  window.addEventListener("online", () => {
+    toast("🌐 عاد الاتصال", "info");
+    Subtitle._failedMap.clear();
+    setTimeout(() => OfflineResume.restore("online-event"), 200);
+    if (Prefetcher._paused && !Prefetcher._running) {
+      Prefetcher.resume();
     }
   });
+
+  /* ⭐ offline — snapshot فقط (بدون polling) */
   window.addEventListener("offline", () => {
     const dc = state.downloads.filter(d => d.reciterId === state.reciterId).length;
-    /* ⭐ احفظ آخر مكان + حالة التشغيل عشان نستأنف لما النت يرجع */
-    if (state.current && state.playing) {
-      state._pendingResume = {
-        time: els.audio.currentTime || state.currentTime || 0,
-        wasPlaying: true
-      };
+    if (state.current) {
+      OfflineResume.save("offline");
+    }
+    if (Prefetcher._running) {
+      Prefetcher._paused = true;
+      Prefetcher._progress.phase = "paused";
+      Prefetcher._emit();
+      Prefetcher._saveState();
     }
     if (dc > 0) toast(`📴 ${dc} سورة محمّلة تعمل بدون إنترنت`, "success");
     else toast("📴 انقطع الاتصال", "info");
   });
+
+  /* ⭐ visibility — استعادة عند الرجوع للتاب */
+  document.addEventListener("visibilitychange", () => {
+    state._tabVisible = !document.hidden;
+    if (document.hidden) {
+      stopRafLoop();
+      if (state.current) {
+        state.currentTime = els.audio.currentTime || 0;
+        state._lastSavedTime = state.currentTime;
+        Store.save(state);
+      }
+    } else {
+      if (state.playing) startRafLoop();
+      if (navigator.onLine && OfflineResume._read()) {
+        setTimeout(() => OfflineResume.restore("visibility"), 300);
+      }
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    stopRafLoop();
+    if (state.current) {
+      state.currentTime = els.audio.currentTime || 0;
+      Store.save(state);
+      if (!navigator.onLine) OfflineResume.save("pagehide");
+    }
+  });
+  window.addEventListener("beforeunload", () => {
+    stopRafLoop();
+    if (state.current) {
+      state.currentTime = els.audio.currentTime || 0;
+      Store.save(state);
+      if (!navigator.onLine) OfflineResume.save("beforeunload");
+    }
+  });
 }
 
-setInterval(() => { if (state.current && !els.audio.paused) { state.currentTime = els.audio.currentTime; saveSoon(); } }, CONFIG.progressSaveEveryMs);
-setInterval(() => { if (els.mobileSidebar && els.mobileSidebar.classList.contains("on")) UI.updateMobileValues(); }, 2000);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { if (state.current) state.currentTime = els.audio.currentTime || 0; Store.save(state); } });
-window.addEventListener("pagehide", () => { if (state.current) state.currentTime = els.audio.currentTime || 0; Store.save(state); });
-window.addEventListener("beforeunload", () => { if (state.current) state.currentTime = els.audio.currentTime || 0; Store.save(state); });
+function safeSave() { if (!state.current) return; const now = els.audio.currentTime || 0; if (Math.abs(now - state._lastSavedTime) < CONFIG.SAVE_DELTA_SEC) return; state.currentTime = now; state._lastSavedTime = now; Store.save(state); }
 
 init();
 })();

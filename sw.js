@@ -1,9 +1,6 @@
-/* ═══════════════════════════════════════════════════════════════════════
-   SERVICE WORKER — القرآن الكريم v2.0.0
-   ⚠️ كل مرة تعدّل → زوّد رقم CACHE_VERSION
-   ═══════════════════════════════════════════════════════════════════════ */
 
-const CACHE_VERSION = 'v2.0.1';
+
+const CACHE_VERSION = 'v2.0.2';
 const CACHE_NAME = `quran-cache-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -11,32 +8,40 @@ const APP_SHELL = [
     './index.html',
     './manifest.json',
     './css/style.css',
+    './css/adhkar.css',
     './js/app.js',
     './js/pwa.js',
+    './js/adhkar.js',
     './icons/icon-192.png',
     './icons/icon-512.png',
     './icons/icon-maskable-512.png'
 ];
 
-/* ─── Install ─── */
+/* ─── Install — skip waiting فورًا ─── */
 self.addEventListener('install', (event) => {
+    self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => cache.addAll(APP_SHELL))
-            .catch((err) => console.warn('[SW] pre-cache failed:', err))           
+            .catch((err) => console.warn('[SW] pre-cache failed:', err))
     );
 });
 
-/* ─── Activate ─── */
+/* ─── Activate — نضّف كل الكاشات القديمة ─── */
 self.addEventListener('activate', (event) => {
     event.waitUntil(
-        caches.keys().then((names) =>
-            Promise.all(
-                names
-                    .filter((n) => n.startsWith('quran-cache-') && n !== CACHE_NAME)
-                    .map((n) => caches.delete(n))
+        caches.keys()
+            .then((names) =>
+                Promise.all(
+                    names
+                        .filter((n) => n.startsWith('quran-cache-') && n !== CACHE_NAME)
+                        .map((n) => {
+                            console.log('[SW] Deleting old cache:', n);
+                            return caches.delete(n);
+                        })
+                )
             )
-        ).then(() => self.clients.claim())
+            .then(() => self.clients.claim())
     );
 });
 
@@ -45,8 +50,7 @@ self.addEventListener('fetch', (event) => {
     if (event.request.method !== 'GET') return;
     const url = new URL(event.request.url);
 
-    // ⭐ 1) منع HTTP Cache تمامًا للصوت و API
-    // (الصوتيات اللي المستخدم نزّلها بتتحفظ في IndexedDB — مش هنا)
+    /* 1) API + الصوت — شبكة مباشرة بدون كاش */
     if (
         url.hostname.includes('mp3quran.net') ||
         url.hostname.includes('alquran.cloud') ||
@@ -59,7 +63,7 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // 2) Google Fonts → cache-first
+    /* 2) Google Fonts → cache-first */
     if (url.hostname.includes('fonts.googleapis.com') || url.hostname.includes('fonts.gstatic.com')) {
         event.respondWith(
             caches.match(event.request).then((cached) => {
@@ -74,7 +78,7 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // 3) HTML / navigation → network-first
+    /* 3) HTML / navigation → network-first */
     if (event.request.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname === '/') {
         event.respondWith(
             fetch(event.request)
@@ -88,7 +92,7 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // 4) باقي الملفات → cache-first
+    /* 4) ملفات التطبيق → cache-first */
     event.respondWith(
         caches.match(event.request).then((cached) => {
             if (cached) return cached;
