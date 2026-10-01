@@ -4,70 +4,52 @@
 
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
   let _reloadAfterUpdate = false;
+  let _initialController = navigator.serviceWorker.controller;
 
   navigator.serviceWorker.register('./sw.js', {
     scope: './',
     updateViaCache: 'none'
   })
   .then((reg) => {
-    console.log('[PWA] SW registered | standalone:', isStandalone);
-
-    /* ⭐ بانر التحديث يظهر بس لو التطبيق مثبت + SW جديد في waiting */
     const showBannerIfWaiting = () => {
-      if (!isStandalone) return;  // ⬅️ شرط أساسي: المثبتين فقط
-      if (reg.waiting) {
-        console.log('[PWA] Waiting SW found — showing update banner');
-        showUpdateBanner(() => reg.waiting.postMessage({ type: 'SKIP_WAITING' }));
+      if (!navigator.onLine) return;
+      if (!reg.waiting) return;
+
+      if (isStandalone) {
+        // ⭐ مثبّت: اعرض بانر التحديث (لأنه مش بياخد التحديث لوحده)
+        showUpdateBanner(() => {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        });
+      } else {
+        // ⭐ مستخدم متصفح: حدّث تلقائي بدون بانر
+        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
       }
     };
 
     const trackInstalling = (worker) => {
       worker.addEventListener('statechange', () => {
-        console.log('[PWA] SW state:', worker.state);
-        if (worker.state === 'installed') {
-          setTimeout(showBannerIfWaiting, 100);
-        }
+        if (worker.state === 'installed') setTimeout(showBannerIfWaiting, 100);
       });
     };
 
-    /* 1) فحص فوري */
     reg.update().catch(() => {});
     showBannerIfWaiting();
 
-    /* 2) راقب التحديثات */
     reg.addEventListener('updatefound', () => {
-      console.log('[PWA] updatefound fired');
       if (reg.installing) trackInstalling(reg.installing);
     });
 
-    /* 3) فحص دوري كل 15 دقيقة (بدل 5 دقايق لتقليل الاستهلاك) */
-    setInterval(() => {
-      reg.update().catch(() => {});
-      showBannerIfWaiting();
-    }, 15 * 60 * 1000);
-
-    /* 4) فحص عند العودة للتطبيق */
-    let _lastVisCheck = 0;
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible') return;
-      const now = Date.now();
-      if (now - _lastVisCheck < 60000) return;
-      _lastVisCheck = now;
-      reg.update().then(showBannerIfWaiting).catch(() => {});
-    });
-
-    /* 5) polling في أول 30 ثانية */
-    let polls = 0;
-    const fastPoll = setInterval(() => {
-      polls++;
-      showBannerIfWaiting();
-      if (polls >= 15) clearInterval(fastPoll);
-    }, 2000);
+    // ⭐ لو رجع النت، نتحقق تاني
+    window.addEventListener('online', () => setTimeout(showBannerIfWaiting, 1000));
   })
-  .catch((err) => console.warn('[PWA] SW failed:', err));
+  .catch(() => {});
 
-  /* إعادة تحميل بعد تفعيل SW جديد */
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // ⭐ أول SW — مفيش reload
+    if (!_initialController) {
+      _initialController = navigator.serviceWorker.controller;
+      return;
+    }
     if (_reloadAfterUpdate) return;
     _reloadAfterUpdate = true;
     window.location.reload();
@@ -87,6 +69,7 @@
     document.body.appendChild(bar);
     document.getElementById('pwaUpdateNow').addEventListener('click', () => { bar.remove(); onConfirm(); });
     document.getElementById('pwaUpdateLater').addEventListener('click', () => {
+      // ⭐ مفيش تسجيل "dismissed" — البانر يرجع تاني عند أول زيارة جاية
       bar.style.transition = 'transform .3s, opacity .3s';
       bar.style.transform = 'translateY(-100%)';
       bar.style.opacity = '0';
@@ -95,16 +78,16 @@
   }
 })();
 
-/* ═══ بانر التثبيت — لغير المثبتين فقط ═══ */
+/* ═══ بانر التثبيت ═══ */
 (function setupInstallPrompt() {
   let deferredPrompt = null;
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+  // ⭐ مثبّت → مفيش بانر خالص
   if (isStandalone) return;
 
-  /* لو المستخدم ضغط "لاحقًا" مؤخرًا — مانظهرش تاني */
-  const dismissedAt = localStorage.getItem('pwa-install-dismissed');
-  if (dismissedAt && Date.now() - parseInt(dismissedAt, 10) < 7 * 24 * 60 * 60 * 1000) return;
+  // ⭐ مفيش فحص "dismissed" ولا "visits" — البانر يظهر كل زيارة
 
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
@@ -112,20 +95,18 @@
     if (navigator.onLine) setTimeout(showInstallBanner, 3000);
   });
 
-  if (isIOS && !isStandalone) {
-    const visits = parseInt(localStorage.getItem('pwa-visits') || '0', 10);
-    localStorage.setItem('pwa-visits', String(visits + 1));
-    if (visits >= 1 && navigator.onLine) setTimeout(showInstallBanner, 5000);
+  // ⭐ iOS: عرض التعليمات كل زيارة (لو أونلاين)
+  if (isIOS) {
+    if (navigator.onLine) setTimeout(showInstallBanner, 4000);
   }
 
   window.addEventListener('online', () => {
     if (isStandalone) return;
     if (document.getElementById('pwaInstallBanner')) return;
-    const dt = localStorage.getItem('pwa-install-dismissed');
-    if (dt && Date.now() - parseInt(dt, 10) < 7 * 24 * 60 * 60 * 1000) return;
     if (deferredPrompt || isIOS) setTimeout(showInstallBanner, 2000);
   });
 
+  // ⭐ قطع النت أثناء العرض → اخفي البانر فورًا
   window.addEventListener('offline', () => {
     const b = document.getElementById('pwaInstallBanner');
     if (b) b.remove();
@@ -161,26 +142,25 @@
       installBtn.addEventListener('click', async () => {
         if (!deferredPrompt) return;
         banner.remove();
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        console.log('[PWA] Install outcome:', outcome);
+        try {
+          deferredPrompt.prompt();
+          await deferredPrompt.userChoice;
+        } catch(_) {}
         deferredPrompt = null;
       });
     }
 
     document.getElementById('pwaInstallClose').addEventListener('click', () => {
+      // ⭐ مفيش تسجيل "dismissed" — البانر يرجع تاني عند أول زيارة جاية
       banner.style.transition = 'transform .3s, opacity .3s';
       banner.style.transform = 'translateY(100%)';
       banner.style.opacity = '0';
       setTimeout(() => banner.remove(), 300);
-      localStorage.setItem('pwa-install-dismissed', String(Date.now()));
     });
   }
 
   window.addEventListener('appinstalled', () => {
-    console.log('[PWA] App installed');
     const banner = document.getElementById('pwaInstallBanner');
     if (banner) banner.remove();
-    localStorage.removeItem('pwa-install-dismissed');
   });
 })();

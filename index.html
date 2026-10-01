@@ -6,6 +6,11 @@
 <meta name="theme-color" content="#0a0d13" />
 <meta name="color-scheme" content="dark" />
 <title>القرآن الكريم</title>
+<link rel="preconnect" href="https://server13.mp3quran.net">
+<link rel="preconnect" href="https://server8.mp3quran.net">
+<link rel="preconnect" href="https://server10.mp3quran.net">
+<link rel="preconnect" href="https://server7.mp3quran.net">
+<link rel="preconnect" href="https://server11.mp3quran.net">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Amiri+Quran&display=swap" rel="stylesheet">
@@ -227,41 +232,51 @@
     <div class="modal-head"><h3><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>البيانات المحمّلة</h3><button class="modal-close" data-close="storageOverlay" aria-label="إغلاق"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button></div>
     <div class="modal-body">
       <!-- ═══ مساحة التخزين العامة ═══ -->
-      <div class="storage-summary">
+            <div class="storage-summary">
         <div style="display:flex;align-items:center;gap:.5rem"><svg viewBox="0 0 24 24" style="width:1.1rem;height:1.1rem;color:var(--gold)"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg><b style="font-size:.85rem">مساحة التخزين</b></div>
         <div class="storage-bar"><i id="storageBarFill" style="width:0%"></i></div>
         <div class="storage-labels"><span>المستخدم: <b id="storageUsed">0 MB</b></span><span>المتاح: <b id="storageAvail">—</b></span></div>
         <div class="storage-stats"><div class="storage-stat"><b id="storageCount">0</b><span>سورة</span></div><div class="storage-stat"><b id="storageReciters">0</b><span>قارئ</span></div><div class="storage-stat"><b id="storageTotal">0 MB</b><span>الحجم</span></div></div>
       </div>
-
-      <!-- ⭐ v31: قسم توقيتات الآيات (مبسّط) -->
-      <div class="storage-summary prefetch-summary" id="prefetchSummary">
-        <div class="prefetch-head">
-          <svg class="prefetch-icon" viewBox="0 0 24 24"><path d="M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z"/></svg>
-          <b>توقيتات الآيات</b>
-          <span class="prefetch-status" id="prefetchStatus">—</span>
-          <button class="prefetch-clear-btn" id="prefetchClear" type="button" title="مسح التوقيتات" aria-label="مسح التوقيتات">
-            <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-          </button>
-        </div>
-        <div class="storage-bar"><i id="prefetchBarFill" style="width:0%"></i></div>
-        <div class="storage-labels">
-          <span><b id="prefetchPercent">0%</b> · <span id="prefetchText">0 / 798</span></span>
-          <span id="prefetchFailed" style="color:var(--rose);font-weight:700"></span>
-        </div>
-      </div>
-
+      <div class="storage-summary" id="staticDataInfo"></div>
       <div id="storageList"></div>
     </div>
     <div class="modal-foot"><button class="dbtn danger" id="storageClearAll">مسح الكل</button><button class="dbtn primary" id="storageCloseBtn">إغلاق</button></div>
   </div>
 </div>
 
-<div class="toast" id="toast" role="status" aria-live="polite"><svg viewBox="0 0 24 24" id="toastIcon"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span id="toastMsg"></span></div>
-<audio id="audio" preload="metadata" playsinline></audio>
+<div id="dataLoadingOverlay" style="
+  position:fixed;inset:0;z-index:99990;
+  background:rgba(10,13,19,.92);
+  display:none;align-items:center;justify-content:center;
+  flex-direction:column;gap:1.5rem;
+  font-family:inherit;color:#ece8e0;direction:rtl;
+  padding:1.5rem;text-align:center;
+">
+  <svg viewBox="0 0 24 24" style="width:4rem;height:4rem;color:#d4af37;animation:pwaSlideUp 1.4s ease-in-out infinite alternate;">
+    <path d="M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z" fill="currentColor"/>
+  </svg>
+  <div style="font-size:1.1rem;font-weight:800;color:#ecc964">جاري تحميل بيانات القرآن الكريم</div>
+  <div style="font-size:.9rem;opacity:.75" >توقيتات القراء</div>
+  <div style="width:min(24rem,80vw);height:8px;background:rgba(255,255,255,.08);border-radius:99px;overflow:hidden">
+    <div id="dataLoadingBar" style="height:100%;width:0%;background:linear-gradient(90deg,#d4af37,#ecc964);border-radius:99px;transition:width .3s ease"></div>
+  </div>
+  <div id="dataLoadingText" style="font-size:.85rem;color:#a49e93">0 / 0</div>
+</div>
 
+<div class="toast" id="toast" role="status" aria-live="polite"><svg viewBox="0 0 24 24" id="toastIcon"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg><span id="toastMsg"></span></div>
+<audio id="audio" preload="auto" playsinline></audio>
+
+<script src="data/timings-1.js"></script>
+<script src="data/timings-2.js"></script>
+<script src="data/timings-3.js"></script>
+<script src="data/timings-4.js"></script>
+<script src="data/timings-5.js"></script>
+<script src="data/timings-6.js"></script>
+<script src="data/texts.js"></script>
 <script src="js/app.js"></script>
 <script src="js/pwa.js"></script>
 <script src="js/adhkar.js"></script>
+
 </body>
 </html>
