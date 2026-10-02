@@ -1731,6 +1731,7 @@ els.audio.addEventListener("playing", () => {
   if (state._buffering) { state._buffering = false; }
   if (!state.playing) { state.playing = true; }
   UI.nowPlaying();
+  startRafLoop(); 
 });
 els.audio.addEventListener("waiting", () => {
   if (!state._buffering && state._playIntent) { state._buffering = true; UI.nowPlaying(); }
