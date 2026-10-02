@@ -19,7 +19,8 @@ const ICON = {
   copy:    'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
   book:    'M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 6h-2v2h2v2h-2v2h2v2h-2v2H9v-2H7v-2h2v-2H7v-2h2V8H7V6h2V4h2v2h2v2z',
   star:    'M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z',
-  chevron: 'M7 10l5 5 5-5z'
+   chevron: 'M7 10l5 5 5-5z',
+  edit:    'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z'
 };
 const svg = (d, attrs='') => `<svg viewBox="0 0 24 24" fill="currentColor" ${attrs}><path d="${d}"/></svg>`;
 
@@ -30,6 +31,7 @@ const FALAQ  = 'قُلْ أَعُوذُ بِرَبِّ الْفَلَقِ ۝ م�
 const NAS    = 'قُلْ أَعُوذُ بِرَبِّ النَّاسِ ۝ مَلِكِ النَّاسِ ۝ إِلَٰهِ النَّاسِ ۝ مِنْ شَرِّ الْوَسْوَاسِ الْخَنَّاسِ ۝ الَّذِي يُوَسْوِسُ فِي صُدُورِ النَّاسِ ۝ مِنَ الْجِنَّةِ وَالنَّاسِ';
 
 const DATA = [
+ {id:'prayer',cat:'الصلاة على النبي ﷺ',emoji:'ﷺ',title:'الصلاة على النبي ﷺ',type:'prayer',count:10},
   {id:'w1',cat:'الاستيقاظ',emoji:'⏰',title:'الحمد لله الذي أحيانا',text:'الْحَمْدُ لِلَّهِ الَّذِي أَحْيَانَا بَعْدَ مَا أَمَاتَنَا وَإِلَيْهِ النُّشُورُ',type:'hadith',count:1,source:'البخاري · 6312'},
   {id:'w2',cat:'الاستيقاظ',emoji:'⏰',title:'دعاء الاستيقاظ الكامل',text:'لَا إِلَٰهَ إِلَّا اللَّهُ وَحْدَهُ لَا شَرِيكَ لَهُ، لَهُ الْمُلْكُ وَلَهُ الْحَمْدُ، وَهُوَ عَلَىٰ كُلِّ شَيْءٍ قَدِيرٌ، سُبْحَانَ اللَّهِ، وَالْحَمْدُ لِلَّهِ، وَلَا إِلَٰهَ إِلَّا اللَّهُ، وَاللَّهُ أَكْبَرُ، وَلَا حَوْلَ وَلَا قُوَّةَ إِلَّا بِاللَّهِ الْعَلِيِّ الْعَظِيمِ، رَبِّ اغْفِرْ لِي',type:'hadith',count:1,source:'البخاري · 6311'},
   {id:'s1',cat:'الصباح',emoji:'🌅',title:'آية الكرسي',text:KURSI,type:'quran',count:1,source:'البقرة: 255'},
@@ -121,6 +123,31 @@ const SEARCH_INDEX = DATA.map(a => ({
   n: normAr(`${a.title} ${a.text || ''} ${a.action || ''} ${a.actionSub || ''} ${a.source} ${a.cat}`)
 }));
 
+
+const PRAYER_KEY = 'quran-adhkar-prayer-v1';
+const PRAYER_DEFAULT_TEXT = 'اللَّهُمَّ صَلِّ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ، كَمَا صَلَّيْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ، اللَّهُمَّ بَارِكْ عَلَى مُحَمَّدٍ وَعَلَى آلِ مُحَمَّدٍ، كَمَا بَارَكْتَ عَلَى إِبْرَاهِيمَ وَعَلَى آلِ إِبْرَاهِيمَ، إِنَّكَ حَمِيدٌ مَجِيدٌ';
+const PRAYER_DEFAULT_TARGET = 10;
+
+function loadPrayer() {
+  try {
+    const raw = localStorage.getItem(PRAYER_KEY);
+    if (!raw) return { text: PRAYER_DEFAULT_TEXT, target: PRAYER_DEFAULT_TARGET };
+    const p = JSON.parse(raw);
+    return {
+      text: (typeof p.text === 'string' && p.text.trim()) ? p.text : PRAYER_DEFAULT_TEXT,
+      target: (Number.isInteger(p.target) && p.target >= 1 && p.target <= 1000) ? p.target : PRAYER_DEFAULT_TARGET
+    };
+  } catch(_) {
+    return { text: PRAYER_DEFAULT_TEXT, target: PRAYER_DEFAULT_TARGET };
+  }
+}
+
+function savePrayer(p) {
+  try {
+    localStorage.setItem(PRAYER_KEY, JSON.stringify({ text: p.text, target: p.target }));
+  } catch(_) {}
+}
+
 /* ═══ State ═══ */
 const S = {
   built: false,
@@ -178,7 +205,18 @@ function build() {
         <div class="ad-detail-body" id="adDetailBody"></div>
       </div>
     </div>
-    <div class="ad-toast" id="adToast"><span id="adToastMsg"></span></div>
+        <div class="ad-toast" id="adToast"><span id="adToastMsg"></span></div>
+    <div class="ad-edit-modal" id="adEditModal">
+      <div class="ad-edit-box">
+        <div class="ad-edit-title">${svg(ICON.edit)}<span id="adEditTitle">تعديل</span></div>
+        <textarea class="ad-edit-textarea" id="adEditTextarea" spellcheck="false"></textarea>
+        <input type="number" class="ad-edit-input" id="adEditNumber" min="1" max="1000" inputmode="numeric" />
+        <div class="ad-edit-actions">
+          <button class="ad-edit-btn cancel" id="adEditCancel" type="button">إلغاء</button>
+          <button class="ad-edit-btn save" id="adEditSave" type="button">حفظ</button>
+        </div>
+      </div>
+    </div>
   `;
   document.body.appendChild(root);
 
@@ -202,7 +240,12 @@ function build() {
   elBackdrop.addEventListener('click', close);
   document.getElementById('adDetailBack').addEventListener('click', closeDetail);
   document.getElementById('adDetailCopyTop').addEventListener('click', copyCurrent);
-  document.getElementById('adResetBtn').addEventListener('click', resetAll);
+    document.getElementById('adResetBtn').addEventListener('click', resetAll);
+  document.getElementById('adEditCancel').addEventListener('click', closePrayerEditor);
+  document.getElementById('adEditSave').addEventListener('click', savePrayerEditor);
+  document.getElementById('adEditModal').addEventListener('click', (e) => {
+    if (e.target.id === 'adEditModal') closePrayerEditor();
+  });
 
   /* Search — debounce بسيط */
   let searchTimer = 0;
@@ -303,6 +346,14 @@ function renderList() {
 function itemHTML(a) {
   const done = S.completed.has(a.id);
   const s = S.sessionCounts[a.id] || 0;
+  if (a.type === 'prayer') {
+    const pr = loadPrayer();
+    return `<button class="ad-item ${done ? 'done' : ''}" data-id="${a.id}" type="button">
+      <span class="ad-item-bullet"></span>
+      <span class="ad-item-name">${escHtml(a.title)}</span>
+      <span class="ad-item-progress">${s}/${pr.target}</span>
+    </button>`;
+  }
   const p = done ? a.count : s;
   return `<button class="ad-item ${done ? 'done' : ''}" data-id="${a.id}" type="button">
     <span class="ad-item-bullet"></span>
@@ -373,8 +424,10 @@ function resetVisualState() {
   S.search = '';
   elSearchInput.value = '';
   elSearch.classList.remove('has-text');
-  /* اطوي كل المجموعات */
+   /* اطوي كل المجموعات */
   elBody.querySelectorAll('.ad-group.expanded').forEach(g => g.classList.remove('expanded'));
+  /* ⭐ إعادة بناء القائمة الكاملة بعد إغلاق البانر */
+  renderList();
 }
 
 function isOpen() { return elPanel && elPanel.classList.contains('on'); }
@@ -387,6 +440,14 @@ function openDetail(id) {
   S.detailId = id;
 
   elDetailTitle.textContent = a.title;
+
+  if (a.type === 'prayer') {
+    renderPrayerDetail(a);
+    elDetail.classList.add('on');
+    elDetail.setAttribute('aria-hidden', 'false');
+    return;
+  }
+
   let html = '';
 
   if (a.type === 'action') {
@@ -454,6 +515,133 @@ function openDetail(id) {
   elDetail.setAttribute('aria-hidden', 'false');
 }
 
+/* ═══ Prayer custom detail ═══ */
+function renderPrayerDetail(a) {
+  const pr = loadPrayer();
+  const count = S.sessionCounts[a.id] || 0;
+  const done = count >= pr.target;
+
+    elDetailBody.innerHTML = `
+    <div class="ad-prayer-actions">
+      <button class="ad-prayer-action" type="button" data-act="edit-text">
+        ${svg(ICON.edit)}<span>تعديل الصيغة</span>
+      </button>
+      <button class="ad-prayer-action" type="button" data-act="edit-wird">
+        ${svg(ICON.edit)}<span>الورد: <b>${pr.target}</b></span>
+      </button>
+    </div>
+    <div class="ad-text hadith">${escHtml(pr.text)}</div>
+    <div class="ad-counter-box ${done ? 'done' : ''}">
+      <div class="ad-counter-display">
+        <div class="ad-counter-num" data-num>${count}</div>
+        <div class="ad-counter-divider"></div>
+        <div class="ad-counter-target">${pr.target}<small>الهدف</small></div>
+      </div>
+      <div class="ad-counter-bar"><i data-bar style="width:${Math.min(100, (count / pr.target) * 100)}%"></i></div>
+      <button class="ad-counter-tap ${done ? 'complete' : ''}" type="button" data-act="prayer-tap" ${done ? 'disabled' : ''}>
+        ${svg(done ? ICON.check : ICON.plus)}<span>${done ? 'تم بفضل الله' : 'اضغط للعد'}</span>
+      </button>
+    </div>
+  `;
+  elDetailBody.scrollTop = 0;
+
+  if (!elDetailBody._wiredPrayer) {
+    elDetailBody._wiredPrayer = true;
+    elDetailBody.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === 'prayer-tap') onPrayerTap();
+      else if (act === 'edit-text') openPrayerEditor('text');
+      else if (act === 'edit-wird') openPrayerEditor('wird');
+    });
+  }
+}
+
+function onPrayerTap() {
+  const a = DATA_BY_ID[S.detailId];
+  if (!a) return;
+  const pr = loadPrayer();
+  const cur = S.sessionCounts[a.id] || 0;
+  if (cur >= pr.target) return;
+
+  const next = cur + 1;
+  S.sessionCounts[a.id] = next;
+
+  if (navigator.vibrate) navigator.vibrate(next >= pr.target ? 80 : 18);
+
+  const num = elDetailBody.querySelector('[data-num]');
+  const bar = elDetailBody.querySelector('[data-bar]');
+  if (num) num.textContent = next;
+  if (bar) bar.style.width = Math.min(100, (next / pr.target) * 100) + '%';
+
+  if (next >= pr.target) {
+    S.completed.add(a.id);
+    const box = elDetailBody.querySelector('.ad-counter-box');
+    const btn = elDetailBody.querySelector('.ad-counter-tap');
+    if (box) box.classList.add('done');
+    if (btn) { btn.classList.add('complete'); btn.disabled = true; btn.innerHTML = `${svg(ICON.check)}<span>تم بفضل الله</span>`; }
+    toast('أتممت وردك — تقبّل الله');
+    updateRow(a.id, pr.target, true);
+  } else {
+    updateRow(a.id, next, false);
+  }
+}
+
+/* ═══ Prayer editor modal ═══ */
+let _prayerEditMode = null;
+
+function openPrayerEditor(mode) {
+  _prayerEditMode = mode;
+  const modal = document.getElementById('adEditModal');
+  if (!modal) return;
+  const title = document.getElementById('adEditTitle');
+  const ta = document.getElementById('adEditTextarea');
+  const numIn = document.getElementById('adEditNumber');
+  const pr = loadPrayer();
+
+  if (mode === 'text') {
+    title.textContent = 'تعديل الصيغة';
+    ta.style.display = '';
+    numIn.style.display = 'none';
+    ta.value = pr.text;
+    setTimeout(() => ta.focus(), 120);
+  } else {
+    title.textContent = 'تعديل الورد اليومي';
+    ta.style.display = 'none';
+    numIn.style.display = '';
+    numIn.value = pr.target;
+    setTimeout(() => { numIn.focus(); numIn.select(); }, 120);
+  }
+  modal.classList.add('on');
+}
+
+function closePrayerEditor() {
+  const modal = document.getElementById('adEditModal');
+  if (modal) modal.classList.remove('on');
+  _prayerEditMode = null;
+}
+
+function savePrayerEditor() {
+  const pr = loadPrayer();
+  if (_prayerEditMode === 'text') {
+    const val = document.getElementById('adEditTextarea').value.trim();
+    if (!val) { toast('الصيغة فاضية'); return; }
+    pr.text = val;
+  } else if (_prayerEditMode === 'wird') {
+    let val = parseInt(document.getElementById('adEditNumber').value, 10);
+    if (!isFinite(val) || val < 1) val = 1;
+    if (val > 1000) val = 1000;
+    pr.target = val;
+  }
+  savePrayer(pr);
+  closePrayerEditor();
+  toast('✓ تم الحفظ');
+  const a = DATA_BY_ID[S.detailId];
+  if (a && a.type === 'prayer') renderPrayerDetail(a);
+  if (a) updateRow(a.id, S.sessionCounts[a.id] || 0, S.completed.has(a.id));
+}
+
 function onTap(a) {
   if (S.completed.has(a.id)) return;
 
@@ -501,7 +689,14 @@ function updateRow(id, val, done) {
   if (!row) return;
   row.classList.toggle('done', done);
   const p = row.querySelector('.ad-item-progress');
-  if (p) p.textContent = `${val}/${DATA_BY_ID[id].count}`;
+  if (!p) return;
+  const a = DATA_BY_ID[id];
+  if (a && a.type === 'prayer') {
+    const pr = loadPrayer();
+    p.textContent = `${val}/${pr.target}`;
+  } else if (a) {
+    p.textContent = `${val}/${a.count}`;
+  }
 }
 
 function resetOne(a) {
