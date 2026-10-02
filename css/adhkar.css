@@ -31,7 +31,12 @@
   transition:transform var(--t-slow),opacity var(--t-slow);
   padding-bottom:env(safe-area-inset-bottom,0px);
   overscroll-behavior:contain;
-  contain:layout style;  
+  /* ⭐ v3.0.3: contain محسّن — layout + paint + style */
+  contain:layout paint style;
+  /* ⭐ تلميح للمتصفح: هيتم تحريكه بـ transform */
+  will-change:transform,opacity;
+  /* ⭐ منع وميض */
+  backface-visibility:hidden;
 }
 .ad-panel.on{transform:translateY(0);opacity:1;pointer-events:auto}
 .ad-panel::before{
@@ -89,7 +94,7 @@
   background:var(--overlay-1);
   border:1px solid var(--border);
   color:var(--text-3);
-  transition:all var(--t-fast);
+  transition:color var(--t-fast),background-color var(--t-fast),border-color var(--t-fast);
   flex-shrink:0;
 }
 .ad-icon-btn:hover{
@@ -111,7 +116,7 @@
   border-radius:var(--r-lg);
   background:var(--overlay-1);
   border:1px solid var(--border);
-  transition:all var(--t-fast);
+  transition:border-color var(--t-fast),background-color var(--t-fast);
 }
 .ad-search:focus-within{
   border-color:var(--gold-line);
@@ -210,12 +215,18 @@
   transform:rotate(180deg);
   color:var(--gold-2);
 }
+/* ⭐ v3.0.3: grid-template-rows بدل max-height — GPU-accelerated */
 .ad-group-body{
-  max-height:0;overflow:hidden;
-  transition:max-height .35s var(--ease);
+  display:grid;
+  grid-template-rows:0fr;
+  transition:grid-template-rows .32s var(--ease);
 }
 .ad-group.expanded .ad-group-body{
-  max-height:5000px;overflow-y:auto;
+  grid-template-rows:1fr;
+}
+.ad-group-inner{
+  overflow:hidden;
+  min-height:0;
 }
 
 /* ═══ Item (row) ═══ */
@@ -235,7 +246,7 @@
 .ad-item-bullet{
   width:6px;height:6px;border-radius:50%;
   background:var(--gold);flex-shrink:0;opacity:.6;
-  transition:all var(--t-fast);
+  transition:background-color var(--t-fast),opacity var(--t-fast),box-shadow var(--t-fast);
 }
 .ad-item.done .ad-item-bullet{
   background:var(--green);opacity:1;
@@ -284,6 +295,9 @@
   transform:translateX(-100%);
   opacity:0;pointer-events:none;
   transition:transform var(--t-med),opacity var(--t-med);
+  /* ⭐ v3.0.3: GPU hint */
+  will-change:transform,opacity;
+  backface-visibility:hidden;
 }
 .ad-detail.on{
   transform:translateX(0);
@@ -475,7 +489,7 @@
   font-weight:700;color:var(--text-2);
   cursor:pointer;
   display:flex;align-items:center;justify-content:center;gap:6px;
-  transition:all var(--t-fast);
+  transition:color var(--t-fast),background-color var(--t-fast),border-color var(--t-fast);
 }
 .ad-counter-action:hover{
   color:var(--gold-2);
@@ -647,7 +661,7 @@
   font-family:inherit;font-size:.78rem;font-weight:700;
   color:var(--text-2);cursor:pointer;
   display:flex;align-items:center;justify-content:center;gap:6px;
-  transition:all var(--t-fast);
+  transition:color var(--t-fast),background-color var(--t-fast),border-color var(--t-fast);
 }
 .ad-prayer-action:hover{
   color:var(--gold-2);
@@ -660,13 +674,16 @@
 /* ═══ Prayer Edit Modal ═══ */
 .ad-edit-modal{
   position:fixed;inset:0;
-  background:rgba(5,7,10,.72);
-  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  /* ⭐ v3.0.3: خلفية أقوى بدل backdrop-filter */
+  background:rgba(5,7,10,.85);
   z-index:15000;
   display:grid;place-items:center;
   padding:1rem;
   opacity:0;pointer-events:none;
   transition:opacity var(--t-med);
+  /* ⭐ عزل الطبقة */
+  isolation:isolate;
+  contain:layout paint;
 }
 .ad-edit-modal.on{opacity:1;pointer-events:auto}
 .ad-edit-box{
@@ -697,7 +714,7 @@
   font-family:"Noto Naskh Arabic","Amiri","Tahoma",serif;
   font-size:1.05rem;line-height:2;
   resize:vertical;text-align:right;direction:rtl;
-  transition:all var(--t-fast);
+  transition:border-color var(--t-fast),background-color var(--t-fast),box-shadow var(--t-fast);
 }
 .ad-edit-textarea:focus{
   border-color:var(--gold-line);
@@ -714,7 +731,7 @@
   font-size:1.2rem;font-weight:800;
   text-align:center;
   font-variant-numeric:tabular-nums;
-  transition:all var(--t-fast);
+  transition:border-color var(--t-fast),background-color var(--t-fast),box-shadow var(--t-fast);
   font-family:inherit;
   margin:0 auto;display:block;
 }
@@ -732,7 +749,7 @@
   border-radius:var(--r-md);
   font-weight:800;font-size:.88rem;
   cursor:pointer;font-family:inherit;
-  transition:all var(--t-fast);
+  transition:color var(--t-fast),background-color var(--t-fast),border-color var(--t-fast),box-shadow var(--t-fast);
 }
 .ad-edit-btn.cancel{
   background:var(--overlay-2);

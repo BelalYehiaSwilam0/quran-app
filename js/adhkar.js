@@ -156,7 +156,8 @@ const S = {
   completed: new Set(),
   sessionCounts: {},
   detailId: null,
-  hideTimer: 0
+  hideTimer: 0,
+  _needsRerender: false
 };
 
 /* ═══ DOM refs (تُبنى مرة واحدة) ═══ */
@@ -312,14 +313,14 @@ function renderList() {
     let html = '';
     for (const [catName, items] of groups) {
       const cat = CATEGORIES.find(c => c.name === catName);
-      html += `<div class="ad-group expanded" data-cat="${escHtml(catName)}">
+           html += `<div class="ad-group expanded" data-cat="${escHtml(catName)}">
         <button class="ad-group-head" type="button">
           <span class="ad-group-emoji">${cat.emoji}</span>
           <span class="ad-group-name">${escHtml(catName)}</span>
           <span class="ad-group-count">${items.length}</span>
           ${svg(ICON.chevron, 'class="ad-group-chevron"')}
         </button>
-        <div class="ad-group-body">${items.map(itemHTML).join('')}</div>
+        <div class="ad-group-body"><div class="ad-group-inner">${items.map(itemHTML).join('')}</div></div>
       </div>`;
     }
     elBody.innerHTML = html;
@@ -330,14 +331,14 @@ function renderList() {
   let html = '';
   for (const cat of CATEGORIES) {
     const ex = S.expanded.has(cat.name);
-    html += `<div class="ad-group ${ex ? 'expanded' : ''}" data-cat="${escHtml(cat.name)}">
+       html += `<div class="ad-group ${ex ? 'expanded' : ''}" data-cat="${escHtml(cat.name)}">
       <button class="ad-group-head" type="button">
         <span class="ad-group-emoji">${cat.emoji}</span>
         <span class="ad-group-name">${escHtml(cat.name)}</span>
         <span class="ad-group-count">${cat.items.length}</span>
         ${svg(ICON.chevron, 'class="ad-group-chevron"')}
       </button>
-      <div class="ad-group-body">${cat.items.map(itemHTML).join('')}</div>
+      <div class="ad-group-body"><div class="ad-group-inner">${cat.items.map(itemHTML).join('')}</div></div>
     </div>`;
   }
   elBody.innerHTML = html;
@@ -366,9 +367,9 @@ function itemHTML(a) {
 function open() {
   build();
   clearTimeout(S.hideTimer);
-  /* تأكد إنه ظاهر قبل الأنيميشن */
+  if (S._needsRerender) { S._needsRerender = false; renderList(); }
   elPanel.style.display = '';
-  elPanel.getBoundingClientRect(); /* force reflow — مهم للأنيميشن */
+  elPanel.getBoundingClientRect(); 
 
   requestAnimationFrame(() => {
     elPanel.classList.add('on');
@@ -424,10 +425,10 @@ function resetVisualState() {
   S.search = '';
   elSearchInput.value = '';
   elSearch.classList.remove('has-text');
-   /* اطوي كل المجموعات */
+    /* اطوي كل المجموعات */
   elBody.querySelectorAll('.ad-group.expanded').forEach(g => g.classList.remove('expanded'));
-  /* ⭐ إعادة بناء القائمة الكاملة بعد إغلاق البانر */
-  renderList();
+  /* ⭐ ضع علامة أن القائمة تحتاج إعادة بناء — نُؤجلها لوقت الفتح */
+  S._needsRerender = true;
 }
 
 function isOpen() { return elPanel && elPanel.classList.contains('on'); }

@@ -1,16 +1,10 @@
 (function(){
 "use strict";
 
-/* ═══════════════════════════════════════════════════════════════════════
-   QURAN PLAYER v33 — Production Ready 10/10 (EF Core-style)
-   ✅ v31.5: dedupe + user priority
-   ✅ v32: instant seek + abort in-flight + race timeout
-   ✅ v33: Split Queries (audio-meta) + Blob LRU (3) + Explicit Prefetcher
-           + TypedArrays timings + Pause on hidden + migration v2→v3
-   ═══════════════════════════════════════════════════════════════════════ */
+
 const CONFIG = {
   padTo: 3, defaultVolume: 0.9, defaultSpeed: 1, defaultEndBuffer: 0.05,
-  storageKey: "quran-player-v24", themeStorageKey: "quran-player-theme",
+  storageKey: "quran-player-settings", themeStorageKey: "quran-player-theme",
   saveDebounceMs: 1200, toastDurationMs: 2800,
   autoClosePanelDelayMs: 450, maxRepeatCount: 100,
   repeatRestartDelayMs: 300, silentSwitchMs: 1500, themeFreezeMs: 60,
@@ -291,54 +285,6 @@ const ICONS = {
 let toastTimer = 0;
 function toast(msg, type = "info") { els.toastMsg.textContent = msg; els.toast.classList.remove("success", "error", "repeat"); if (type === "success") { els.toast.classList.add("success"); els.toastIcon.innerHTML = ICONS.check; } else if (type === "error") { els.toast.classList.add("error"); els.toastIcon.innerHTML = ICONS.alert; } else if (type === "repeat") { els.toast.classList.add("repeat"); els.toastIcon.innerHTML = ICONS.repeat; } else { els.toastIcon.innerHTML = ICONS.check; } els.toast.classList.add("on"); clearTimeout(toastTimer); toastTimer = setTimeout(() => els.toast.classList.remove("on"), CONFIG.toastDurationMs); }
 
-/* ⭐ Block Alert — تنبيه أحمر إلزامي لا يختفي إلا بالضغط على "موافق" */
-function showBlockAlert(msg) {
-  if (document.getElementById("blockAlertOverlay")) return;
-  const overlay = document.createElement("div");
-  overlay.id = "blockAlertOverlay";
-  overlay.className = "block-alert-overlay";
-  overlay.innerHTML = `
-    <div class="block-alert-box" role="alertdialog" aria-modal="true" aria-labelledby="blockAlertMsg">
-      <div class="block-alert-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 2L1 21h22L12 2zm1 15h-2v-2h2v2zm0-4h-2v-4h2v4z" fill="currentColor"/></svg>
-      </div>
-      <div class="block-alert-msg" id="blockAlertMsg">${msg}</div>
-      <button class="block-alert-btn" type="button">حسنًا، فهمت</button>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add("on"));
-  overlay.querySelector(".block-alert-btn").addEventListener("click", () => {
-    overlay.classList.remove("on");
-    setTimeout(() => overlay.remove(), 250);
-  });
-}
-/* ⭐ Block Alert — تنبيه أحمر إلزامي لا يختفي إلا بالضغط على "موافق" */
-function showBlockAlert(msg) {
-  if (document.getElementById("blockAlertOverlay")) return;
-  const overlay = document.createElement("div");
-  overlay.id = "blockAlertOverlay";
-  overlay.className = "block-alert-overlay";
-  overlay.innerHTML = `
-    <div class="block-alert-box" role="alertdialog" aria-modal="true" aria-labelledby="blockAlertMsg">
-      <div class="block-alert-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 2L1 21h22L12 2zm1 15h-2v-2h2v2zm0-4h-2v-4h2v4z" fill="currentColor"/></svg>
-      </div>
-      <div class="block-alert-msg" id="blockAlertMsg">${msg}</div>
-      <button class="block-alert-btn" type="button">حسنًا، فهمت</button>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add("on"));
-  overlay.querySelector(".block-alert-btn").addEventListener("click", () => {
-    overlay.classList.remove("on");
-    setTimeout(() => overlay.remove(), 250);
-  });
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
-   ⭐ v33: TimingsAPI — TypedArrays + dedupe + user priority
-   ═══════════════════════════════════════════════════════════════════════ */
 const TimingsAPI = {
   cache: {}, _loadedFromDB: false,
   has(rid, surah) { return !!(this.cache[rid] && this.cache[rid][surah]); },
@@ -405,6 +351,23 @@ async function resolveSurahSrc(rid, sn) {
 
 function pauseAudio() { try { els.audio.pause(); } catch(_){} }
 function setLoadedSource(rid, sn) { state._loadedRid = rid; state._loadedSn = sn; }
+
+/* ⭐ v3.0.3: فحص هل الوقت الحالي داخل الـ buffer */
+function isTimeBuffered(time) {
+  const buffered = els.audio.buffered;
+  for (let i = 0; i < buffered.length; i++) {
+    if (time >= buffered.start(i) && time <= buffered.end(i)) return true;
+  }
+  return false;
+}
+
+/* ⭐ v3.0.3: هل نقدر نعمل Seek للنقطة دي؟ */
+function canSeekTo(time) {
+  // لو النت شغال → مسموح (Range Requests هيتعامل)
+  if (navigator.onLine) return true;
+  // لو النت مقطوع → لازم الوقت يكون في الـ buffer
+  return isTimeBuffered(time);
+}
 
 const StaticDataLoader = {
   _readyPromise: null,
@@ -635,7 +598,7 @@ const Subtitle = {
 const cardEls = new Map();
 let lastPlayingCard = null;
 const UI = {
-  _markerNodes: new Map(), _currentMarkerNode: null, _lastHighlightAyah: null, _markerRenderKey: null,
+  _markerNodes: new Map(), _currentMarkerNode: null, _lastHighlightAyah: null, _markerRenderKey: null, _pendingMarkerIdle: null,
   buildLibrary() {
     const h = document.createElement("div");
     h.innerHTML = SURAHS.map(s => { const tc = s.type === "مكية" ? "makki" : "madani"; return `<article class="card" data-num="${s.number}" tabindex="0" role="button" aria-label="سورة ${esc(s.nameAr)}"><div class="num">${ICONS.star}<span class="val">${s.number}</span><div class="eq-indicator"><i></i><i></i><i></i></div></div><div class="meta"><div class="ar">${esc(s.nameAr)}</div><div class="en">${esc(s.nameEn)}</div><div class="tags"><span class="tag">${s.ayahs} آية</span><span class="tag ${tc}">${s.type}</span><span class="tag downloaded-badge" data-downloaded-badge style="display:none">⬇ محمّلة</span><span class="tag resume-badge" data-resume-badge style="display:none">▶ استئناف</span><span class="tag range-badge" data-range-badge style="display:none">نطاق</span><span class="tag repeat-badge" data-repeat-badge style="display:none">🔁</span></div></div><div class="card-actions"><button class="mini dl-mini" data-act="download" data-num="${s.number}" title="تحميل"><span class="ring"></span><span class="dl-mini-pct">0%</span><svg viewBox="0 0 24 24">${ICONS.download}</svg></button><button class="mini" data-act="add" data-num="${s.number}" title="أضف"><svg viewBox="0 0 24 24">${ICONS.plus}</svg></button></div></article>`; }).join("");
@@ -699,36 +662,118 @@ const UI = {
     const dur = hasAudio ? els.audio.duration : (state._lastKnownDuration || 0);
     const cur = hasAudio ? (els.audio.currentTime || 0) : (state.currentTime || 0);
     const ratio = dur > 0 ? cur / dur : 0;
-    els.seekFill.style.transform = `scaleX(${ratio})`;
-    els.seekThumb.style.left = (ratio * 100).toFixed(3) + "%";
-    els.timeCur.textContent = fmtTime(cur); if (dur > 0) els.timeTotal.textContent = fmtTime(dur);
-    if (dur > 0) els.seek.setAttribute("aria-valuenow", Math.round(ratio * 100));
-    if (els.audio.buffered.length && hasAudio) { const end = els.audio.buffered.end(els.audio.buffered.length - 1); els.seekBuffer.style.width = ((end / dur) * 100).toFixed(2) + "%"; }
+       els.seekFill.style.transform = `scaleX(${ratio})`;
+    els.seekThumb.style.setProperty("--seek-x", (ratio * 100).toFixed(3) + "%");
+    const curStr = fmtTime(cur);
+    if (els.timeCur.textContent !== curStr) els.timeCur.textContent = curStr;
+    if (dur > 0) {
+      const durStr = fmtTime(dur);
+      if (els.timeTotal.textContent !== durStr) els.timeTotal.textContent = durStr;
+      const ariaVal = String(Math.round(ratio * 100));
+      if (els.seek.getAttribute("aria-valuenow") !== ariaVal) els.seek.setAttribute("aria-valuenow", ariaVal);
+    }
+    if (els.audio.buffered.length && hasAudio) {
+      const end = els.audio.buffered.end(els.audio.buffered.length - 1);
+      const newWidth = ((end / dur) * 100).toFixed(2) + "%";
+      if (els.seekBuffer.style.width !== newWidth) els.seekBuffer.style.width = newWidth;
+    }
   },
-     renderAyahMarkers() {
-    if (!state.current) return this._clearMarkers();
-    const dur = els.audio.duration; if (!isFinite(dur) || dur <= 0) return this._clearMarkers();
-    const timings = TimingsAPI.getFor(state.reciterId, state.current);
-    if (!timings || timings.n < 2) return this._clearMarkers();
-    const key = `${state.reciterId}-${state.current}-${Math.round(dur)}-R`;
-    if (this._markerRenderKey === key) return;
-    this._markerRenderKey = key;
-    els.seekAyahMarkers.innerHTML = ""; this._markerNodes.clear(); this._currentMarkerNode = null; this._lastHighlightAyah = null;
-    const frag = document.createDocumentFragment();
-    const { n, starts, baseAyah } = timings;
-    const base = baseAyah || 0;
+      renderAyahMarkers() {
+  if (!state.current) return this._clearMarkers();
+  const dur = els.audio.duration;
+  if (!isFinite(dur) || dur <= 0) return this._clearMarkers();
+  const timings = TimingsAPI.getFor(state.reciterId, state.current);
+  if (!timings || timings.n < 2) return this._clearMarkers();
+
+  const key = `${state.reciterId}-${state.current}-${Math.round(dur)}-R`;
+  if (this._markerRenderKey === key) return;
+  /* ⭐ ملحوظة: مش بنحفظ _markerRenderKey هنا — هيتحفظ بعد نجاح البناء */
+
+  /* ⭐ إلغاء أي عملية بناء معلقة من قبل */
+  if (this._pendingMarkerIdle != null) {
+    if (window.cancelIdleCallback) cancelIdleCallback(this._pendingMarkerIdle);
+    else clearTimeout(this._pendingMarkerIdle);
+    this._pendingMarkerIdle = null;
+  }
+
+  /* ⭐ تفريغ فوري للشريط */
+  els.seekAyahMarkers.innerHTML = "";
+  this._markerNodes.clear();
+  this._currentMarkerNode = null;
+  this._lastHighlightAyah = null;
+
+  const { n, starts, baseAyah } = timings;
+  const base = baseAyah || 0;
+  const container = els.seekAyahMarkers;
+  const nodesMap = this._markerNodes;
+  const renderKeySnapshot = key;
+  /* ⭐ حفظ هوية السورة والقارئ للحماية من stale builds */
+  const surahSnapshot = state.current;
+  const ridSnapshot = state.reciterId;
+  const self = this;
+
+  /* ⭐ البناء الفعلي — يُؤجَّل لـ requestIdleCallback لتجنب blocking الـ UI */
+  const buildMarkers = () => {
+    self._pendingMarkerIdle = null;
+
+    /* ⭐ تحقق 1: هل الحالة اتغيرت أثناء الانتظار؟ */
+    if (!state.current) return;
+    if (state.current !== surahSnapshot || state.reciterId !== ridSnapshot) return;
+
+    /* ⭐ تحقق 2: هل في طلب بناء أحدث اتخطى ده؟ */
+    if (self._markerRenderKey === renderKeySnapshot) return;
+
+    /* ⭐ بناء HTML string كامل — أسرع 5-10× من createElement */
+    let html = '';
+    const keys = [];
     for (let i = 1; i < n; i++) {
       const pos = (starts[i] / dur) * 100;
       if (pos <= 0 || pos >= 100) continue;
-      const m = document.createElement("i");
-      m.style.left = pos.toFixed(3) + "%";
-      m.dataset.ayah = i + base;
-      frag.appendChild(m);
-      this._markerNodes.set(i + base, m);
+      html += `<i style="left:${pos.toFixed(3)}%" data-ayah="${i + base}"></i>`;
+      keys.push(i + base);
     }
-    els.seekAyahMarkers.appendChild(frag);
+
+    /* ⭐ إضافة مرة واحدة للـ DOM — layout واحد فقط */
+    container.innerHTML = html;
+
+    /* ⭐ ربط المراجع — k لتجنب shadowing + Math.min للأمان */
+    const children = container.children;
+    const len = Math.min(keys.length, children.length);
+    for (let k = 0; k < len; k++) {
+      nodesMap.set(keys[k], children[k]);
+    }
+
+    /* ⭐ قفل المفتاح — دلوقتي بس بعد نجاح البناء */
+    self._markerRenderKey = renderKeySnapshot;
+
+    /* ⭐ إعادة تطبيق الـ highlight للآية الحالية */
+    self._lastHighlightAyah = null;
+    if (state.current) {
+      const audioHealthy = !els.audio.error && els.audio.readyState >= 2;
+      const t = audioHealthy ? (els.audio.currentTime || 0) : (state.currentTime || 0);
+      const curAyah = Subtitle.findCurrentAyah(state.reciterId, state.current, t);
+      if (curAyah != null) self.highlightMarker(curAyah);
+    }
+  };
+
+  if (window.requestIdleCallback) {
+    this._pendingMarkerIdle = requestIdleCallback(buildMarkers, { timeout: 500 });
+  } else {
+    this._pendingMarkerIdle = setTimeout(buildMarkers, 50);
+  }
+},
+   _clearMarkers() {
+    if (this._pendingMarkerIdle != null) {
+      if (window.cancelIdleCallback) cancelIdleCallback(this._pendingMarkerIdle);
+      else clearTimeout(this._pendingMarkerIdle);
+      this._pendingMarkerIdle = null;
+    }
+    els.seekAyahMarkers.innerHTML = "";
+    this._markerNodes.clear();
+    this._currentMarkerNode = null;
+    this._lastHighlightAyah = null;
+    this._markerRenderKey = null;
   },
-  _clearMarkers() { els.seekAyahMarkers.innerHTML = ""; this._markerNodes.clear(); this._currentMarkerNode = null; this._lastHighlightAyah = null; this._markerRenderKey = null; },
   highlightMarker(ayahNum) { if (this._lastHighlightAyah === ayahNum) return; this._lastHighlightAyah = ayahNum; if (this._currentMarkerNode) { this._currentMarkerNode.classList.remove("current"); this._currentMarkerNode = null; } if (ayahNum == null) return; const node = this._markerNodes.get(ayahNum); if (node) { node.classList.add("current"); this._currentMarkerNode = node; } },
   rangeMarkers() {
     const total = els.audio.duration; const has = isFinite(total) && total > 0;
@@ -831,8 +876,15 @@ function startRangeWatch() { clearRangeHardStop(); if (!state.range.active || st
 function stopRangeWatch() { clearRangeHardStop(); }
 
 const Audio = {
-      async load(num, { autoplay = true, seek = 0 } = {}) {
+       async load(num, { autoplay = true, seek = 0 } = {}) {
     if (!SURAH_MAP.has(num)) return;
+    if (!navigator.onLine && !Downloads.isDownloaded(state.reciterId, num)) {
+      const s = SURAH_MAP.get(num);
+      const sName = s ? s.nameAr : `سورة ${num}`;
+      toast(`📴 ${sName} غير محمّلة — لا يمكن التشغيل بدون إنترنت`, "error");
+      return;
+    }
+    
     const inL2 = state.range.active && state.range.crossSurah && state.range.phase === "leg2" && num === state.range.endSurah;
     if (state.range.active && !inL2) { const sc = (num !== state.range.surah) || (state.range.crossSurah && state.range.phase === "leg2"); if (sc) { const rc = state.range.repeatCount || 1; const ss = state.range.sameSurah; state.range = emptyRange(); state.range.repeatCount = rc; state.range.sameSurah = ss; UI.updateRangeBadges(); UI.rangeMarkers(); Range.syncUI(); stopRangeWatch(); } }
     markSilentSwitch();
@@ -863,15 +915,18 @@ const Audio = {
   play() { state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); },
   pause() { state._playIntent = false; els.audio.pause(); safeSave(); },
   toggle() { if (!state.current) return; if (els.audio.paused) Audio.play(); else Audio.pause(); },
-  seekTo(sec) {
+    seekTo(sec) {
     if (!isFinite(els.audio.duration)) return;
-    const cur = state.current;
-    if (cur && !Downloads.isDownloaded(state.reciterId, cur)) {
-      showBlockAlert("⚠️ يجب تنزيل السورة أولاً للتنقل داخلها");
+    const target = clamp(sec, 0, els.audio.duration);
+    
+    /* ⭐ v3.0.3: منع التنقل لمنطقة غير محمّلة بدون نت */
+    if (!canSeekTo(target)) {
+      toast("📴 هذا الجزء غير محمّل — لا يمكن التنقل بدون إنترنت", "error");
       return;
     }
+    
     const wasPlaying = state._playIntent;
-    els.audio.currentTime = clamp(sec, 0, els.audio.duration);
+    els.audio.currentTime = target;
     if (wasPlaying && els.audio.paused) { const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); }
     safeSave();
   },  setVolume(v) { state.volume = clamp(v, 0, 1); els.audio.volume = state.volume; els.audio.muted = state.volume === 0; UI.volume(); saveSoon(); },
@@ -885,88 +940,92 @@ async function switchReciterSmart(newRid) {
   const oldTime = els.audio.currentTime || state.currentTime || 0;
   const curSurah = state.current;
 
-  // ⭐ القاعدة الجديدة: هل القارئ الجديد عنده السورة محمّلة؟
+  /* ⭐ v3.0.3: التبديل يعمل مع أي سورة — Range Requests مدعومة */
   const newReciterHasSurah = curSurah ? Downloads.isDownloaded(newRid, curSurah) : false;
 
-  // أوفلاين + القارئ الجديد مش محمّل → ارفض التبديل
+  /* أوفلاين + السورة مش محمّلة عند القارئ الجديد → ارفض */
   if (!navigator.onLine && curSurah && !newReciterHasSurah) {
     toast(`📴 القارئ ده مش محمّل أوفلاين`, "error");
     return;
   }
 
+  /* استخراج الآية الحالية من القارئ القديم */
   let curAyah = null;
-  if (curSurah && newReciterHasSurah) {
-    if (!TimingsAPI.has(oldRid, curSurah)) { try { await TimingsAPI.fetch(oldRid, curSurah); } catch(_){} }
+  if (curSurah) {
+    if (!TimingsAPI.has(oldRid, curSurah)) {
+      try { await TimingsAPI.fetch(oldRid, curSurah); } catch(_){}
+    }
     curAyah = Subtitle.findCurrentAyah(oldRid, curSurah, oldTime);
   }
+
+  /* تغيير القارئ */
   state.reciterId = newRid;
   const rec = RECITER_MAP.get(newRid);
-  UI.reciterName(rec.name); UI.updateDownloadedBadges(); UI.updateMobileValues(); saveSoon();
+  UI.reciterName(rec.name);
+  UI.updateDownloadedBadges();
+  UI.updateMobileValues();
+  saveSoon();
+
   if (!curSurah) { toast(`🎙️ ${rec.name}`, "success"); return; }
 
+  /* تحميل التوقيتات الجديدة (احتياطي) */
   if (!TimingsAPI.has(newRid, curSurah)) {
     try { await TimingsAPI.fetch(newRid, curSurah); } catch(_) {}
   }
 
-  let targetTime = newReciterHasSurah ? oldTime : 0;
+  /* حساب الوقت المستهدف — دائمًا على نفس الآية */
+  let targetTime = 0;
   let precise = false;
   const newTimings = TimingsAPI.getFor(newRid, curSurah);
 
-  // ⭐ منطق الوقت المستهدف — فقط لو السورة محمّلة للقارئ الجديد
-  if (newReciterHasSurah) {
-    if (curAyah !== null && newTimings) {
-      const r = TimingsAPI.getAyahRange(newRid, curSurah, curAyah);
-      if (r) { targetTime = r.startTime; precise = true; }
-    }
-    if (!precise && curAyah === null && newTimings) {
-      const n = newTimings.n;
-      for (let i = 0; i < n; i++) {
-        if (oldTime >= newTimings.starts[i] && oldTime < newTimings.ends[i]) {
-          targetTime = newTimings.starts[i];
-          precise = true;
-          break;
-        }
+  /* المسار 1: عندنا رقم الآية + توقيتات القارئ الجديد */
+  if (curAyah !== null && newTimings) {
+    const r = TimingsAPI.getAyahRange(newRid, curSurah, curAyah);
+    if (r) { targetTime = r.startTime; precise = true; }
+  }
+
+  /* المسار 2: مطابقة الوقت المباشر */
+  if (!precise && newTimings) {
+    const n = newTimings.n;
+    for (let i = 0; i < n; i++) {
+      if (oldTime >= newTimings.starts[i] && oldTime < newTimings.ends[i]) {
+        targetTime = newTimings.starts[i];
+        precise = true;
+        break;
       }
-    }
-    if (!precise && curAyah !== null) {
-      try {
-        await TimingsAPI.fetch(newRid, curSurah);
-        const t2 = TimingsAPI.getFor(newRid, curSurah);
-        if (t2) {
-          const r2 = TimingsAPI.getAyahRange(newRid, curSurah, curAyah);
-          if (r2) { targetTime = r2.startTime; precise = true; }
-        }
-      } catch(_) {}
-      if (!precise) {
-        toast("⚠️ تعذّر تحميل توقيتات القارئ، حاول مرة أخرى", "error");
-        state.reciterId = oldRid;
-        UI.reciterName(RECITER_MAP.get(oldRid).name);
-        return;
-      }
-    }
-  } else {
-    // ⭐ السورة مش محمّلة للقارئ الجديد — ابدأ من الثانية صفر
-    targetTime = 0;
-    precise = false;
-    if (state.range.active) {
-      const rc = state.range.repeatCount || 1;
-      state.range = emptyRange();
-      state.range.repeatCount = rc;
-      UI.updateRangeBadges(); UI.rangeMarkers(); stopRangeWatch();
     }
   }
 
-  // تعديلات النطاق لو نفس السورة (فقط لو السورة محمّلة للقارئ الجديد)
-  if (newReciterHasSurah && state.range.active && state.range.surah === curSurah && !state.range.crossSurah) {
+  /* المسار 3: نسبة من السورة */
+  if (!precise && newTimings) {
+    const oldDur = els.audio.duration || state._lastKnownDuration || 0;
+    const newDur = newTimings.ends[newTimings.n - 1] || 0;
+    if (oldDur > 0 && newDur > 0) {
+      targetTime = (oldTime / oldDur) * newDur;
+    }
+  }
+
+  /* تعديل النطاق النشط */
+  if (state.range.active && state.range.surah === curSurah && !state.range.crossSurah) {
     const r = state.range;
-    if (r.mode === "duration") { const rangeDur = r.endTime - r.startTime; r.startTime = targetTime; r.endTime = targetTime + rangeDur; }
-    else if (newTimings) {
-      if (r.startAyah) { const rs = TimingsAPI.getAyahRange(newRid, curSurah, r.startAyah); if (rs) r.startTime = rs.startTime; }
-      if (r.endAyah) { const re = TimingsAPI.getAyahRange(newRid, curSurah, r.endAyah); if (re) r.endTime = re.endTime + CONFIG.defaultEndBuffer; }
+    if (r.mode === "duration") {
+      const rangeDur = r.endTime - r.startTime;
+      r.startTime = targetTime;
+      r.endTime = targetTime + rangeDur;
+    } else if (newTimings) {
+      if (r.startAyah) {
+        const rs = TimingsAPI.getAyahRange(newRid, curSurah, r.startAyah);
+        if (rs) r.startTime = rs.startTime;
+      }
+      if (r.endAyah) {
+        const re = TimingsAPI.getAyahRange(newRid, curSurah, r.endAyah);
+        if (re) r.endTime = re.endTime + CONFIG.defaultEndBuffer;
+      }
     }
     UI.rangeMarkers();
   }
 
+  /* تحميل القارئ الجديد من نفس النقطة */
   UI._markerRenderKey = null;
   markSilentSwitch();
   _audioLoadId++;
@@ -1002,11 +1061,13 @@ async function switchReciterSmart(newRid) {
     els.audio.addEventListener("error", onErr);
     const tmo = setTimeout(finish, 8000);
   });
+
   UI.updatePlayingCard(); UI.nowPlaying(); UI.rangeMarkers();
   Subtitle.currentKey = null; Subtitle.update();
   Range.applyLock();
-  if (!newReciterHasSurah) toast(`🎙️ ${rec.name} — بداية السورة`, "info");
-  else if (precise && curAyah !== null) toast(`🎙️ ${rec.name} — بدءاً من آية ${curAyah}`, "success");
+
+  if (precise && curAyah !== null) toast(`🎙️ ${rec.name} — بدءاً من آية ${curAyah}`, "success");
+  else if (curAyah !== null) toast(`🎙️ ${rec.name} — الآية ${curAyah}`, "success");
   else toast(`🎙️ ${rec.name}`, "success");
 }
 
@@ -1173,26 +1234,13 @@ const Range = {
       Range.refreshCrossSurahUI(); Range.updateRepeatHighlight(); Range.updateSameSurahUI(); UI.phaseNotice(); Range.applyLock();
   },
   refreshCrossSurahUI() { const ev = parseInt(els.rpEndSurahSelect.value, 10) || state.current; const ic = ev !== state.current; els.rpEndRow.classList.toggle("cross-surah", ic); if (ic) { const s = SURAH_MAP.get(ev); els.rpEndCrossHint.textContent = `في ${s.nameAr}`; } else els.rpEndCrossHint.textContent = ""; },
-  applyLock() {
-    const cur = state.current;
-    const locked = !cur || !Downloads.isDownloaded(state.reciterId, cur);
+   applyLock() {
+    /* ⭐ v3.0.3: قفل النطاق اتشال — Range Requests شغالة */
     const panel = els.rangePanel;
     if (!panel) return;
-    panel.classList.toggle("rp-locked", locked);
-    let notice = panel.querySelector(".rp-locked-notice");
-    if (locked) {
-      if (!notice) {
-        notice = document.createElement("div");
-        notice.className = "rp-locked-notice";
-        notice.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2L1 21h22L12 2zm1 15h-2v-2h2v2zm0-4h-2v-4h2v4z" fill="currentColor"/></svg><span>يجب تنزيل السورة أولاً لاستخدام النطاق</span>';
-        const head = panel.querySelector(".rp-head");
-        if (head && head.parentNode) head.parentNode.insertBefore(notice, head.nextSibling);
-      } else {
-        notice.style.display = "";
-      }
-    } else if (notice) {
-      notice.remove();
-    }
+    panel.classList.remove("rp-locked");
+    const notice = panel.querySelector(".rp-locked-notice");
+    if (notice) notice.remove();
   },
     async apply() {
     Range.clearErrors();
@@ -1565,20 +1613,27 @@ function bindDrag(el, onR) {
   let dragging = false, wasPlayingBeforeDrag = false, pendingRatio = 0;
   const ratioFromEvent = (e) => { const rc = els.seek.getBoundingClientRect(); const x = e.touches ? e.touches[0].clientX : e.clientX; return clamp((x - rc.left) / rc.width, 0, 1); };
   const preview = (r) => { els.seekFill.style.transform = `scaleX(${r})`; els.seekThumb.style.left = (r * 100).toFixed(3) + "%"; const dur = els.audio.duration; if (isFinite(dur) && dur > 0) els.timeCur.textContent = fmtTime(r * dur); };
-  const onStart = (e) => {
-    const cur = state.current;
-    if (cur && !Downloads.isDownloaded(state.reciterId, cur)) {
-      e.preventDefault();
-      showBlockAlert("⚠️يجب تنزيل السورة أولاً للتنقل داخلها");
-      return;
-    }
+   const onStart = (e) => {
+    /* ⭐ v3.0.3: التنقل الحر مسموح — Range Requests شغالة */
     dragging = true; wasPlayingBeforeDrag = state._playIntent; els.seek.classList.add("dragging"); pendingRatio = ratioFromEvent(e); preview(pendingRatio); e.preventDefault();
   };  const onMove = (e) => { if (!dragging) return; pendingRatio = ratioFromEvent(e); preview(pendingRatio); };
-  const onEnd = () => {
+   const onEnd = () => {
     if (!dragging) return; dragging = false; els.seek.classList.remove("dragging");
     const dur = els.audio.duration;
     if (isFinite(dur) && dur > 0) {
       const target = pendingRatio * dur;
+      
+      /* ⭐ v3.0.3: منع التنقل لمنطقة غير محمّلة بدون نت */
+      if (!canSeekTo(target)) {
+        toast("📴 هذا الجزء غير محمّل — لا يمكن التنقل بدون إنترنت", "error");
+        /* ⭐ إرجاع الشريط لمكانه الأصلي */
+        const curRatio = (els.audio.currentTime || 0) / dur;
+        els.seekFill.style.transform = `scaleX(${curRatio})`;
+        els.seekThumb.style.setProperty("--seek-x", (curRatio * 100).toFixed(3) + "%");
+        els.timeCur.textContent = fmtTime(els.audio.currentTime || 0);
+        return;
+      }
+      
       try { els.audio.currentTime = target; state.currentTime = target; } catch(_){}
       if (wasPlayingBeforeDrag && els.audio.paused) { state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); }
     } else if (state._lastKnownDuration > 0) { const target = pendingRatio * state._lastKnownDuration; state.currentTime = target; }
@@ -1760,9 +1815,24 @@ els.audio.addEventListener("error", () => {
   if (_silentSwitch || !els.audio.src || !state.current) return;
   const err = els.audio.error;
   if (err && err.code === 4 && _audioLoadId === 0) return;
-  if (!navigator.onLine) return;
+  
+  /* ⭐ v3.0.3: عند انقطاع النت — وقف المحاولات + رسالة واضحة */
+  if (!navigator.onLine) {
+    try { els.audio.pause(); } catch(_){}
+    state._buffering = false;
+    UI.nowPlaying();
+    const s = SURAH_MAP.get(state.current);
+    toast(`📴 انقطع الاتصال — ${s ? s.nameAr : ""} متوقف`, "error");
+    return;
+  }
+  
   const lock = _audioLoadId;
-  setTimeout(() => { if (_audioLoadId !== lock || _silentSwitch) return; const s = SURAH_MAP.get(state.current); if (!s) return; toast(`تعذّر تشغيل ${s.nameAr}`, "error"); }, 300);
+  setTimeout(() => { 
+    if (_audioLoadId !== lock || _silentSwitch) return; 
+    const s = SURAH_MAP.get(state.current); 
+    if (!s) return; 
+    toast(`تعذّر تشغيل ${s.nameAr}`, "error"); 
+  }, 300);
 });
 
 document.addEventListener("keydown", (e) => {

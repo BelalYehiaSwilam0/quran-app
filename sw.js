@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v3.0.2';
+const CACHE_VERSION = 'v3.0.3';
 const CACHE_NAME = `quran-cache-${CACHE_VERSION}`;
 
 const APP_SHELL = [
@@ -65,10 +65,6 @@ self.addEventListener('fetch', (event) => {
     if (url.hostname.includes('mp3quran.net') ||
         url.hostname.includes('alquran.cloud') ||
         url.hostname.includes('archive.org')) {
-        event.respondWith(
-            fetch(event.request, { cache: 'no-store', credentials: 'omit' })
-                .catch(() => new Response('', { status: 503 }))
-        );
         return;
     }
 
