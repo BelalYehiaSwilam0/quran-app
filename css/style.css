@@ -208,7 +208,24 @@ svg{width:1em;height:1em;display:block;fill:currentColor;pointer-events:none}
 .mini.dl-mini.downloaded:hover{color:var(--rose);background:rgba(224,93,93,.1)}
 .mini.dl-mini .ring{position:absolute;inset:2px;border-radius:50%;border:2px solid transparent;border-top-color:var(--gold);animation:spin .9s linear infinite;display:none}
 .mini.dl-mini.downloading .ring{display:block}
-.mini.dl-mini.downloading svg{opacity:.25}
+.mini.dl-mini.downloading svg{opacity:.12}
+.mini.dl-mini .dl-mini-pct{
+  position:absolute;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  font-size:.6rem;
+  font-weight:900;
+  color:var(--gold-2);
+  font-variant-numeric:tabular-nums;
+  letter-spacing:-.4px;
+  text-shadow:0 1px 3px rgba(0,0,0,.55);
+  z-index:2;
+  pointer-events:none;
+  line-height:1;
+}
+.mini.dl-mini.downloading .dl-mini-pct{display:flex}
 @keyframes spin{to{transform:rotate(360deg)}}
 .modal.wide{max-width:min(34rem,100%)}
 .modal-body.tight{gap:.5rem}
@@ -636,4 +653,126 @@ svg{width:1em;height:1em;display:block;fill:currentColor;pointer-events:none}
   color:var(--gold-2);
   font-weight:700;
   font-variant-numeric:tabular-nums;
+}
+
+/* ═══ Buffering spinner ═══ */
+.btn-play.buffering { cursor: wait; }
+.btn-play.buffering svg {
+  width: 70% !important;
+  height: 70% !important;
+  animation: spin 0.8s linear infinite;
+  transform-origin: center;
+}
+.btn-play.buffering svg circle {
+  stroke-width: 3;
+  stroke-dasharray: 45 12;
+}
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ═══ Block Alert — تنبيه أحمر إلزامي ═══ */
+.block-alert-overlay{
+  position:fixed;inset:0;z-index:999999;
+  background:rgba(5,7,10,.72);
+  display:grid;place-items:center;padding:1rem;
+  opacity:0;pointer-events:none;
+  transition:opacity .22s var(--ease);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  direction:rtl;font-family:inherit;
+}
+.block-alert-overlay.on{opacity:1;pointer-events:auto}
+.block-alert-box{
+  width:100%;max-width:24rem;
+  background:linear-gradient(180deg,#2a1315 0%,#1a0d0e 100%);
+  border:1.5px solid rgba(224,93,93,.65);
+  border-radius:1.125rem;
+  padding:1.6rem 1.35rem 1.3rem;
+  box-shadow:0 24px 70px rgba(0,0,0,.7),0 0 40px rgba(224,93,93,.22);
+  display:flex;flex-direction:column;align-items:center;gap:1rem;
+  text-align:center;
+  transform:scale(.92) translateY(12px);
+  transition:transform .28s cubic-bezier(.34,1.56,.64,1);
+  position:relative;overflow:hidden;
+}
+.block-alert-box::before{
+  content:"";position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,#e05d5d,transparent);
+}
+.block-alert-overlay.on .block-alert-box{
+  transform:scale(1) translateY(0);
+}
+.block-alert-icon{
+  width:3.5rem;height:3.5rem;border-radius:50%;
+  background:rgba(224,93,93,.14);
+  border:1.5px solid rgba(224,93,93,.55);
+  display:grid;place-items:center;
+  color:#ff7070;
+  animation:blockAlertPulse 1.9s ease-in-out infinite;
+}
+.block-alert-icon svg{width:62%;height:62%}
+@keyframes blockAlertPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(224,93,93,.42)}
+  50%{box-shadow:0 0 0 14px rgba(224,93,93,0)}
+}
+.block-alert-msg{
+  font-size:.94rem;line-height:1.7;color:#f5d9d9;
+  font-weight:600;padding:0 .35rem;
+}
+.block-alert-btn{
+  width:100%;padding:.85rem 1rem;
+  background:linear-gradient(180deg,#e05d5d,#b83d3d);
+  color:#fff;border:none;border-radius:.7rem;
+  font-size:.92rem;font-weight:800;cursor:pointer;
+  font-family:inherit;letter-spacing:.2px;
+  box-shadow:0 6px 20px rgba(224,93,93,.32);
+  transition:transform .15s var(--ease),box-shadow .15s var(--ease),filter .15s var(--ease);
+  margin-top:.25rem;
+}
+.block-alert-btn:hover{
+  filter:brightness(1.08);
+  box-shadow:0 8px 26px rgba(224,93,93,.5);
+}
+.block-alert-btn:active{transform:scale(.97)}
+[data-theme="light"] .block-alert-overlay{background:rgba(30,20,20,.5)}
+[data-theme="light"] .block-alert-box{
+  background:linear-gradient(180deg,#fff5f5,#ffe8e8);
+  border-color:rgba(200,50,50,.5);
+  box-shadow:0 24px 70px rgba(120,30,30,.25),0 0 40px rgba(200,50,50,.15);
+}
+[data-theme="light"] .block-alert-icon{background:rgba(200,50,50,.1);border-color:rgba(200,50,50,.4);color:#b83d3d}
+[data-theme="light"] .block-alert-msg{color:#5c1f1f}
+
+/* ═══ Range Lock — قفل النطاق ═══ */
+.range-panel.rp-locked .rp-grid,
+.range-panel.rp-locked .rp-btns{
+  opacity:.32;
+  pointer-events:none;
+  filter:grayscale(.6);
+  user-select:none;
+}
+.rp-locked-notice{
+  display:flex;align-items:center;gap:.6rem;
+  padding:.75rem .95rem;
+  margin-bottom:clamp(.6rem,1.2vw,.875rem);
+  border-radius:.7rem;
+  background:linear-gradient(180deg,rgba(224,93,93,.16),rgba(224,93,93,.07));
+  border:1.5px solid rgba(224,93,93,.55);
+  color:#ff8888;
+  font-size:clamp(.72rem,.92vw,.82rem);
+  font-weight:700;
+  line-height:1.5;
+  animation:rpLockedIn .3s var(--ease);
+}
+.rp-locked-notice svg{
+  width:1.2rem;height:1.2rem;flex-shrink:0;
+  color:#e05d5d;
+}
+.rp-locked-notice span{flex:1}
+@keyframes rpLockedIn{
+  from{opacity:0;transform:translateY(-4px)}
+  to{opacity:1;transform:translateY(0)}
+}
+[data-theme="light"] .rp-locked-notice{
+  background:linear-gradient(180deg,rgba(200,50,50,.10),rgba(200,50,50,.05));
+  border-color:rgba(200,50,50,.5);
+  color:#b83d3d;
 }
