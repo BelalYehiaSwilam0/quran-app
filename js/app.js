@@ -200,7 +200,8 @@ const RAW = [[1,"الفاتحة","Al-Fatihah",7,"مكية"],[2,"البقرة","A
 const SURAHS = RAW.map(([number, nameAr, nameEn, ayahs, type]) => ({ number, nameAr, nameEn, ayahs, type }));
 const SURAH_MAP = new Map(SURAHS.map(s => [s.number, s]));
 
-const state = { current: null, playing: false, _buffering: false, mode: "seq", queue: [], qIndex: -1, volume: CONFIG.defaultVolume, speed: CONFIG.defaultSpeed, shuffle: false, repeat: "off", search: "", lastPlayed: null, currentTime: 0, _prevVolume: CONFIG.defaultVolume, _restoredFromSaved: false, _playIntent: false, _lastSavedTime: 0, _lastSavedSignature: "", _lastKnownDuration: 0, _tabVisible: !document.hidden, _loadedRid: null, _loadedSn: null, range: emptyRange(), sleep: { active: false, endsAt: 0 }, reciterId: 1, downloads: [], _downloadSelection: new Set(), timingIds: {} };
+const state = { current: null, playing: false, _buffering: false, mode: "seq", queue: [], qIndex: -1, volume: CONFIG.defaultVolume, speed: CONFIG.defaultSpeed, shuffle: false, repeat: "off", search: "", lastPlayed: null, currentTime: 0, _prevVolume: CONFIG.defaultVolume, _restoredFromSaved: false, _playIntent: false, _lastSavedTime: 0, _lastSavedSignature: "", _lastKnownDuration: 0, _tabVisible: !document.hidden, _loadedRid: null, _loadedSn: null, range: emptyRange(), sleep: { active: false, endsAt: 0 }, 
+reciterId: 1, downloads: [], _downloadSelection: new Set(), timingIds: {}, _resumeIntent: null };
 let _saveDebounceTimer = null;
 function saveSoon() {
   if (_saveDebounceTimer) clearTimeout(_saveDebounceTimer);
@@ -940,15 +941,6 @@ async function switchReciterSmart(newRid) {
   const oldTime = els.audio.currentTime || state.currentTime || 0;
   const curSurah = state.current;
 
-  /* ⭐ v3.0.3: التبديل يعمل مع أي سورة — Range Requests مدعومة */
-  const newReciterHasSurah = curSurah ? Downloads.isDownloaded(newRid, curSurah) : false;
-
-  /* أوفلاين + السورة مش محمّلة عند القارئ الجديد → ارفض */
-  if (!navigator.onLine && curSurah && !newReciterHasSurah) {
-    toast(`📴 القارئ ده مش محمّل أوفلاين`, "error");
-    return;
-  }
-
   /* استخراج الآية الحالية من القارئ القديم */
   let curAyah = null;
   if (curSurah) {
@@ -1025,14 +1017,33 @@ async function switchReciterSmart(newRid) {
     UI.rangeMarkers();
   }
 
-  /* تحميل القارئ الجديد من نفس النقطة */
+   /* تحميل القارئ الجديد من نفس النقطة */
   UI._markerRenderKey = null;
   markSilentSwitch();
   _audioLoadId++;
   const loadId = _audioLoadId;
+  
+  /* ⭐ v3.0.4: احفظ النية الكاملة (Single Source of Truth) */
+  state._resumeIntent = {
+    surah: curSurah,
+    ayah: curAyah,
+    time: targetTime,
+    reciterId: newRid,
+    wasPlaying: wasPlaying,
+    loadId: loadId,
+    startedAt: Date.now(),
+  };
+  
   pauseAudio();
   state.currentTime = targetTime;
   setLoadedSource(newRid, curSurah);
+  
+  /* ⭐ v3.0.4: تفعيل Spinner فوراً (بدون انتظار events) */
+  if (wasPlaying) {
+    state._playIntent = true;
+    state._buffering = true;
+    UI.nowPlaying();
+  }
 
   let src;
   try { src = await resolveSurahSrc(newRid, curSurah); } catch(_) { src = getSurahUrl(newRid, curSurah); }
@@ -1046,26 +1057,51 @@ async function switchReciterSmart(newRid) {
     els.audio.load();
   } catch(_) {}
 
-  await new Promise((resolve) => {
+   /* ⭐ v3.0.5: انتظر canplay أو error بـ events فقط */
+  const switchOk = await new Promise((resolve) => {
     let done = false;
-    const finish = () => { if (done) return; done = true; els.audio.removeEventListener("canplay", onCanPlay); els.audio.removeEventListener("error", onErr); clearTimeout(tmo); resolve(); };
+    const finish = (ok) => {
+      if (done) return; done = true;
+      els.audio.removeEventListener("canplay", onCanPlay);
+      els.audio.removeEventListener("error", onErr);
+      clearTimeout(tmo);
+      resolve(ok);
+    };
     const onCanPlay = () => {
       try { els.audio.currentTime = targetTime; state.currentTime = targetTime; } catch(_){}
       if (wasPlaying) { state._playIntent = true; const p = els.audio.play(); if (p && p.catch) p.catch(() => {}); }
       UI._markerRenderKey = null; UI.renderAyahMarkers(); UI.progress();
       Subtitle.currentKey = null; Subtitle.update();
-      finish();
+      finish(true);
     };
-    const onErr = () => finish();
-    els.audio.addEventListener("canplay", onCanPlay);
-    els.audio.addEventListener("error", onErr);
-    const tmo = setTimeout(finish, 8000);
+    const onErr = () => finish(false);
+    els.audio.addEventListener("canplay", onCanPlay, { once: true });
+    els.audio.addEventListener("error", onErr, { once: true });
+    const tmo = setTimeout(() => finish(false), navigator.onLine ? 8000 : 2000);
   });
 
   UI.updatePlayingCard(); UI.nowPlaying(); UI.rangeMarkers();
   Subtitle.currentKey = null; Subtitle.update();
   Range.applyLock();
 
+  /* ⭐ v3.0.4: لو فشل + أوفلاين → احتفظ بالنية والـ Spinner */
+  if (!switchOk && !navigator.onLine && state._resumeIntent && state._resumeIntent.loadId === loadId) {
+    state._buffering = true;
+    UI.nowPlaying();
+    toast(`📴 ${rec.name} — في انتظار النت`, "info");
+    return;
+  }
+  
+  /* ⭐ v3.0.4: لو فشل + أونلاين → امسح النية */
+  if (!switchOk) {
+    state._resumeIntent = null;
+    state._buffering = false;
+    UI.nowPlaying();
+    toast(`⚠️ تعذّر تحميل ${rec.name}`, "error");
+    return;
+  }
+
+  /* نجاح — الرسائل العادية */
   if (precise && curAyah !== null) toast(`🎙️ ${rec.name} — بدءاً من آية ${curAyah}`, "success");
   else if (curAyah !== null) toast(`🎙️ ${rec.name} — الآية ${curAyah}`, "success");
   else toast(`🎙️ ${rec.name}`, "success");
@@ -1140,6 +1176,141 @@ async function restartRange() {
   Subtitle.update();
 }
 
+/* ⭐ v3.0.5: استئناف من النية — Event-driven بالكامل */
+async function resumeFromIntent() {
+  const intent = state._resumeIntent;
+  if (!intent) return;
+  if (!navigator.onLine) return;
+  
+  /* التحقق من صلاحية النية */
+  if (state.current !== intent.surah || state.reciterId !== intent.reciterId) {
+    state._resumeIntent = null;
+    state._buffering = false;
+    UI.nowPlaying();
+    return;
+  }
+  
+  /* لو الـ loadId اتغير → النية القديمة اتلغت */
+  if (intent.loadId !== _audioLoadId) {
+    state._resumeIntent = null;
+    state._buffering = false;
+    UI.nowPlaying();
+    return;
+  }
+  
+  state._buffering = true;
+  UI.nowPlaying();
+  
+  try {
+    /* توقيتات القارئ */
+    if (!TimingsAPI.has(intent.reciterId, intent.surah)) {
+      try { await TimingsAPI.fetch(intent.reciterId, intent.surah); } catch(_) {}
+    }
+    
+    /* التحقق مرة أخرى بعد الانتظار */
+    if (state.current !== intent.surah || state.reciterId !== intent.reciterId) {
+      state._resumeIntent = null;
+      state._buffering = false;
+      UI.nowPlaying();
+      return;
+    }
+    
+    /* جلب المصدر */
+    let src;
+    try { src = await resolveSurahSrc(intent.reciterId, intent.surah); } 
+    catch(_) { src = getSurahUrl(intent.reciterId, intent.surah); }
+    
+    /* التحقق النهائي */
+    if (state.current !== intent.surah || state.reciterId !== intent.reciterId) {
+      state._resumeIntent = null;
+      state._buffering = false;
+      UI.nowPlaying();
+      return;
+    }
+    
+    /* حساب الوقت الدقيق من الآية */
+    let targetTime = intent.time;
+    if (intent.ayah != null) {
+      const r = TimingsAPI.getAyahRange(intent.reciterId, intent.surah, intent.ayah);
+      if (r) targetTime = r.startTime;
+    }
+    
+    /* تحميل المصدر */
+    markSilentSwitch();
+    els.audio.src = src;
+    els.audio.load();
+    
+    /* انتظار canplay */
+    const ok = await new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => {
+        if (done) return; done = true;
+        els.audio.removeEventListener("canplay", onOk);
+        els.audio.removeEventListener("error", onErr);
+        clearTimeout(tmo);
+        resolve(v);
+      };
+      const onOk = () => finish(true);
+      const onErr = () => finish(false);
+      els.audio.addEventListener("canplay", onOk, { once: true });
+      els.audio.addEventListener("error", onErr, { once: true });
+      const tmo = setTimeout(() => finish(false), 10000);
+    });
+    
+    if (!ok) {
+      /* فشل — Retry بعد ثانيتين (بس بـ event-driven) */
+      state._buffering = false;
+      UI.nowPlaying();
+      setTimeout(() => {
+        if (state._resumeIntent) resumeFromIntent();
+      }, 2000);
+      return;
+    }
+    
+    /* التحقق بعد canplay */
+    if (state.current !== intent.surah || state.reciterId !== intent.reciterId) {
+      state._resumeIntent = null;
+      state._buffering = false;
+      UI.nowPlaying();
+      return;
+    }
+    
+    /* القفز للوقت الدقيق */
+    try { els.audio.currentTime = targetTime; } catch(_){}
+    state.currentTime = targetTime;
+    
+    /* تشغيل */
+    if (intent.wasPlaying) {
+      state._playIntent = true;
+      const p = els.audio.play();
+      if (p && p.catch) p.catch(() => {});
+    }
+    
+    /* تحديث الواجهة */
+    UI.progress();
+    Subtitle.currentKey = null;
+    Subtitle.update();
+    
+    /* رسالة النجاح */
+    const rec = RECITER_MAP.get(intent.reciterId);
+    if (intent.ayah != null) {
+      toast(`▶ ${rec.name} — بدءاً من آية ${intent.ayah}`, "success");
+    } else {
+      toast(`▶ ${rec.name}`, "success");
+    }
+    
+    /* ⭐ النية تُمسح تلقائياً بـ playing event */
+    
+  } catch(_) {
+    state._buffering = false;
+    UI.nowPlaying();
+    /* retry */
+    setTimeout(() => {
+      if (state._resumeIntent) resumeFromIntent();
+    }, 2000);
+  }
+}
+
 async function transitionToLeg2() {
   if (!state.range.active || !state.range.crossSurah || state.range.phase !== "leg1") return;
   const e = state.range.endSurah;
@@ -1156,7 +1327,7 @@ async function transitionToLeg2() {
   let src;
   try { src = await resolveSurahSrc(state.reciterId, e); } catch(_) { src = getSurahUrl(state.reciterId, e); }
   if (_audioLoadId !== loadId || state.current !== e) return;
-  try { els.audio.src = src; els.audio.load(); } catch(_){}
+  try { els.audio.src = src; els.audio.load(); } catch(_) {}
   TextAPI.fetch(e).catch(() => {});
   state._playIntent = true;
   const p = els.audio.play(); if (p && p.catch) p.catch(() => {});
@@ -1783,6 +1954,8 @@ els.audio.addEventListener("play", () => {
   startRafLoop();
 });
 els.audio.addEventListener("playing", () => {
+  /* ⭐ v3.0.4: امسح النية — تم النجاح */
+  state._resumeIntent = null;
   if (state._buffering) { state._buffering = false; }
   if (!state.playing) { state.playing = true; }
   UI.nowPlaying();
@@ -1799,10 +1972,21 @@ els.audio.addEventListener("canplay", () => {
 });
 els.audio.addEventListener("pause", () => {
   state.playing = false;
-  state._buffering = false;
   stopRafLoop();
-  UI.nowPlaying(); UI.updatePlayingCard(); UI.updateQueuePlayButtons(); stopRangeWatch();
-  if (state.current && !_silentSwitch) { state.currentTime = els.audio.currentTime || 0; state._lastSavedTime = state.currentTime; Store.save(state); }
+  UI.updatePlayingCard(); UI.updateQueuePlayButtons(); stopRangeWatch();
+
+  /* ⭐ v3.0.4: لا نلمس time ولا buffering لو في نية معلقة */
+  if (state._resumeIntent) {
+    return;
+  }
+  
+  state._buffering = false;
+  UI.nowPlaying();
+  if (state.current && !_silentSwitch) {
+    state.currentTime = els.audio.currentTime || 0;
+    state._lastSavedTime = state.currentTime;
+    Store.save(state);
+  }
 });
 els.audio.addEventListener("ended", () => {
   if (state.range.active && state.range.crossSurah && state.range.phase === "leg1" && state.current === state.range.surah) { transitionToLeg2(); return; }
@@ -1904,10 +2088,15 @@ async function init() {
 
  
 
-    window.addEventListener("online", () => {
+     window.addEventListener("online", () => {
     toast("🌐 عاد الاتصال", "info");
     Subtitle._failedMap.clear();
-    setTimeout(() => OfflineResume.restore("online"), 200);
+    /* ⭐ v3.0.4: أولوية للنية المعلقة (تبديل قارئ فشل) */
+    if (state._resumeIntent) {
+      setTimeout(() => resumeFromIntent(), 200);
+    } else {
+      setTimeout(() => OfflineResume.restore("online"), 200);
+    }
   });
 
   window.addEventListener("offline", () => {
