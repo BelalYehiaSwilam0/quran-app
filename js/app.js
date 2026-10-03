@@ -11,7 +11,6 @@ const CONFIG = {
   downloadConcurrency: 2, ayahBoundaryBufferMs: 150,
   idbName: "quran-player-downloads", idbVersion: 4,
   idbStore: "audio", idbMetaStore: "audio-meta", TEXTS_CACHE_MAX: 200,
-  BLOB_LRU_MAX: 3,
   PLAYING_SAVE_INTERVAL_MS: 45000, SAVE_DELTA_SEC: 3,
   OFFLINE_RETRY_DELAY_MS: 2000, OFFLINE_MAX_RETRIES: 30,
   LS_MAX_BYTES: 10 * 1024 * 1024, SUBTITLE_THROTTLE_MS: 250,
@@ -64,25 +63,6 @@ function createLRU(max) {
   };
 }
 
-/* ⭐ v33: Blob URL LRU — يحتفظ بـ 3 object URLs فقط في الرام */
-function createBlobUrlLRU(max) {
-  const map = new Map();
-  const revoke = (url) => { try { URL.revokeObjectURL(url); } catch(_){} };
-  return {
-    has: k => map.has(k),
-    get(k) { if (!map.has(k)) return null; const v = map.get(k); map.delete(k); map.set(k, v); return v; },
-    set(k, blob) {
-      if (map.has(k)) { revoke(map.get(k)); map.delete(k); }
-      const url = URL.createObjectURL(blob);
-      map.set(k, url);
-      while (map.size > max) { const f = map.keys().next().value; revoke(map.get(f)); map.delete(f); }
-      return url;
-    },
-    delete(k) { if (map.has(k)) { revoke(map.get(k)); map.delete(k); } },
-    clear() { for (const u of map.values()) revoke(u); map.clear(); },
-    get size() { return map.size; }
-  };
-}
 
 const emptyRange = () => ({ active: false, surah: null, endSurah: null, crossSurah: false, phase: "leg1", mode: "ayah", startAyah: null, endAyah: null, startTime: 0, endTime: 0, _pendingMode: "ayah", estimated: false, openEnded: false, repeatCount: 1, repeatIndex: 0, sameSurah: false });
 
@@ -330,24 +310,31 @@ const TextAPI = {
 };
 
 let _silentSwitch = false, _silentSwitchTimer = null, _audioLoadId = 0;
-const _blobUrlLRU = createBlobUrlLRU(CONFIG.BLOB_LRU_MAX);
 
 function markSilentSwitch() { _silentSwitch = true; if (_silentSwitchTimer) clearTimeout(_silentSwitchTimer); _silentSwitchTimer = setTimeout(() => { _silentSwitch = false; _silentSwitchTimer = null; }, CONFIG.silentSwitchMs); }
 function clearSilentSwitch() { if (_silentSwitchTimer) clearTimeout(_silentSwitchTimer); _silentSwitchTimer = null; _silentSwitch = false; }
 function getSurahUrl(rid, sn) { const r = RECITER_MAP.get(rid); return `${(r ? r.server : CONFIG.reciters[0].server)}${pad(sn)}.mp3`; }
 
-/* ⭐ v33: Async source resolution — blob LRU first, then IDB, then remote */
+
 async function resolveSurahSrc(rid, sn) {
-  const k = `${rid}-${sn}`;
-  const cached = _blobUrlLRU.get(k);
-  if (cached) return cached;
   if (Downloads.isDownloaded(rid, sn)) {
     try {
       const rec = await IDB.getAudio(rid, sn);
-      if (rec && rec.blob && rec.blob.size > 0) return _blobUrlLRU.set(k, rec.blob);
+      if (rec && rec.blob && rec.blob.size > 0) {
+        return URL.createObjectURL(rec.blob);
+      }
     } catch(_) {}
   }
   return getSurahUrl(rid, sn);
+}
+
+/* ⭐ v3.0.5: دالة موحّدة لتعيين audio.src — تلغي الـ blob URL السابق أولاً */
+function applyAudioSource(url) {
+  const oldSrc = els.audio.src;
+  if (oldSrc && oldSrc.startsWith('blob:')) {
+    try { URL.revokeObjectURL(oldSrc); } catch(_) {}
+  }
+  els.audio.src = url;
 }
 
 function pauseAudio() { try { els.audio.pause(); } catch(_){} }
@@ -436,10 +423,18 @@ const OfflineResume = {
 
   _stillValid(data) { return state.current === data.sn && state.reciterId === data.rid; },
 
-  async restore(trigger) {
+    async restore(trigger) {
     if (this._restoring) return;
     if (!navigator.onLine) return;
     if (!state.current) return;
+
+    /* ⭐ v3.0.5: Fast-path — لو الـ audio سليم، حاول play() مباشرة بدون إعادة تحميل */
+    if (state._playIntent && els.audio.paused && els.audio.src && !els.audio.error && els.audio.readyState >= 2) {
+      try {
+        await els.audio.play();
+        return;
+      } catch(_) { /* فشل — نكمل الـ restore الكامل */ }
+    }
 
     this._restoring = true;
     this._retryAttempt = 0;
@@ -478,7 +473,7 @@ const OfflineResume = {
     try { src = await resolveSurahSrc(data.rid, data.sn); } catch(_) { this._scheduleRetry(data); return; }
     if (!this._stillValid(data)) { clearSilentSwitch(); this._restoring = false; return; }
 
-    try { els.audio.src = src; els.audio.load(); } catch(_) { this._scheduleRetry(data); return; }
+     try { applyAudioSource(src); els.audio.load(); } catch(_) { this._scheduleRetry(data); return; }
 
     const canPlayOk = await new Promise((resolve) => {
       let done = false;
@@ -878,13 +873,8 @@ function stopRangeWatch() { clearRangeHardStop(); }
 
 const Audio = {
        async load(num, { autoplay = true, seek = 0 } = {}) {
-    if (!SURAH_MAP.has(num)) return;
-    if (!navigator.onLine && !Downloads.isDownloaded(state.reciterId, num)) {
-      const s = SURAH_MAP.get(num);
-      const sName = s ? s.nameAr : `سورة ${num}`;
-      toast(`📴 ${sName} غير محمّلة — لا يمكن التشغيل بدون إنترنت`, "error");
-      return;
-    }
+     if (!SURAH_MAP.has(num)) return;
+    /* ⭐ v3.0.5: بدون حاجز — البراوزر يحاول من أي مصدر متاح (IDB أو HTTP Cache) */
     
     const inL2 = state.range.active && state.range.crossSurah && state.range.phase === "leg2" && num === state.range.endSurah;
     if (state.range.active && !inL2) { const sc = (num !== state.range.surah) || (state.range.crossSurah && state.range.phase === "leg2"); if (sc) { const rc = state.range.repeatCount || 1; const ss = state.range.sameSurah; state.range = emptyRange(); state.range.repeatCount = rc; state.range.sameSurah = ss; UI.updateRangeBadges(); UI.rangeMarkers(); Range.syncUI(); stopRangeWatch(); } }
@@ -900,8 +890,8 @@ const Audio = {
     try { src = await resolveSurahSrc(rid, num); } catch(_) { src = getSurahUrl(rid, num); }
     if (_audioLoadId !== loadId || state.current !== num || state.reciterId !== rid) return;
 
-    try {
-      els.audio.src = src;
+      try {
+      applyAudioSource(src);
       els.audio.playbackRate = state.speed;
       els.audio.volume = state.volume;
       els.audio.muted = state.volume === 0;
@@ -1050,7 +1040,7 @@ async function switchReciterSmart(newRid) {
   if (_audioLoadId !== loadId || state.reciterId !== newRid || state.current !== curSurah) return;
 
   try {
-    els.audio.src = src;
+    applyAudioSource(src);
     els.audio.playbackRate = state.speed;
     els.audio.volume = state.volume;
     els.audio.muted = state.volume === 0;
@@ -1161,7 +1151,7 @@ async function restartRange() {
     let src;
     try { src = await resolveSurahSrc(state.reciterId, r.surah); } catch(_) { src = getSurahUrl(state.reciterId, r.surah); }
     if (_audioLoadId !== loadId || state.current !== r.surah) return;
-    try { els.audio.src = src; els.audio.load(); } catch(_){}
+    try { applyAudioSource(src); els.audio.load(); } catch(_){}
     TextAPI.fetch(r.surah).catch(() => {});
     state._playIntent = true;
     const p = els.audio.play(); if (p && p.catch) p.catch(() => {});
@@ -1327,7 +1317,7 @@ async function transitionToLeg2() {
   let src;
   try { src = await resolveSurahSrc(state.reciterId, e); } catch(_) { src = getSurahUrl(state.reciterId, e); }
   if (_audioLoadId !== loadId || state.current !== e) return;
-  try { els.audio.src = src; els.audio.load(); } catch(_) {}
+  try { applyAudioSource(src); els.audio.load(); } catch(_) {}
   TextAPI.fetch(e).catch(() => {});
   state._playIntent = true;
   const p = els.audio.play(); if (p && p.catch) p.catch(() => {});
@@ -2077,8 +2067,8 @@ async function init() {
     state.current = rn; state.playing = false;
     setLoadedSource(state.reciterId, rn);
     const src = await resolveSurahSrc(state.reciterId, rn);
-    if (state.current === rn) { try { els.audio.src = src; els.audio.load(); } catch(_){} }
-       if (state.currentTime > 1) state._restoredFromSaved = true;
+    if (state.current === rn) { try { applyAudioSource(src); els.audio.load(); } catch(_){} }
+    if (state.currentTime > 1) state._restoredFromSaved = true;
     TextAPI.fetch(rn).catch(() => {});
     if (!TimingsAPI.has(state.reciterId, rn)) { TimingsAPI.fetch(state.reciterId, rn).catch(() => {}); }
     UI.updatePlayingCard(); UI.updateResumeCard(); Range.syncUI(); UI.nowPlaying(); UI.phaseNotice(); UI.updateQueuePlayButtons();
