@@ -1986,17 +1986,32 @@ els.audio.addEventListener("ended", () => {
   Player.next();
 });
 els.audio.addEventListener("error", () => {
-  if (_silentSwitch || !els.audio.src || !state.current) return;
+  if (!els.audio.src || !state.current) return;
   const err = els.audio.error;
   if (err && err.code === 4 && _audioLoadId === 0) return;
   
-  /* ⭐ v3.0.3: عند انقطاع النت — وقف المحاولات + رسالة واضحة */
+  /* ⭐ v4.0.0: لو في silent window — استنى لحد ما تخلص وبعدين شيك */
+  if (_silentSwitch) {
+    const lock = _audioLoadId;
+    setTimeout(() => {
+      if (_audioLoadId !== lock) return;
+      if (_silentSwitch) return;
+      if (!state.current) return;
+      if (!navigator.onLine) {
+        state._buffering = false;
+        UI.nowPlaying();
+        toast(`📴 لا يوجد اتصال بالإنترنت — سيتم التشغيل تلقائياً عند العودة`, "info");
+      }
+    }, CONFIG.silentSwitchMs + 500);
+    return;
+  }
+  
+  /* ⭐ v4.0.0: لو silent window خلص والنت لسه مقطوع */
   if (!navigator.onLine) {
     try { els.audio.pause(); } catch(_){}
     state._buffering = false;
     UI.nowPlaying();
-    const s = SURAH_MAP.get(state.current);
-    toast(`📴 انقطع الاتصال — ${s ? s.nameAr : ""} متوقف`, "error");
+    toast(`📴 لا يوجد اتصال بالإنترنت — سيتم التشغيل تلقائياً عند العودة`, "info");
     return;
   }
   
