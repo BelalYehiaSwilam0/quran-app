@@ -596,65 +596,6 @@ svg{width:1em;height:1em;display:block;fill:currentColor;pointer-events:none}
 .mini.dl-mini.cancelled svg{animation:none}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
-/* ═══ v31: Prefetcher — قسم توقيتات الآيات (مبسّط بشريط نسب) ═══ */
-.prefetch-summary{
-  border-color:var(--gold-line)!important;
-  background:linear-gradient(180deg,var(--gold-soft) 0%,var(--surface-row) 60%);
-  margin-top:clamp(.75rem,1.4vw,.95rem);
-}
-.prefetch-head{
-  display:flex;
-  align-items:center;
-  gap:.5rem;
-  margin-bottom:.5rem;
-}
-.prefetch-head b{
-  font-size:.88rem;
-  font-weight:700;
-  color:var(--gold-2);
-}
-.prefetch-icon{
-  width:1.05rem;
-  height:1.05rem;
-  color:var(--gold);
-  flex-shrink:0;
-}
-.prefetch-status{
-  margin-inline-start:auto;
-  font-size:.7rem;
-  font-weight:700;
-  padding:2px 9px;
-  border-radius:99px;
-  background:var(--overlay-2);
-  color:var(--text-3);
-  white-space:nowrap;
-  font-variant-numeric:tabular-nums;
-  transition:color var(--t-fast),background-color var(--t-fast);
-}
-.prefetch-status.running{color:var(--gold-2);background:var(--gold-soft);}
-.prefetch-status.complete{color:var(--green);background:rgba(16,185,129,.10);}
-.prefetch-status.paused{color:var(--rose);background:rgba(224,93,93,.10);}
-.prefetch-status.error{color:var(--rose);background:rgba(224,93,93,.14);}
-.prefetch-status.aborted{color:var(--text-3);background:var(--overlay-2);}
-.prefetch-clear-btn{
-  width:1.75rem;
-  height:1.75rem;
-  border-radius:var(--r-sm);
-  display:grid;
-  place-items:center;
-  color:var(--text-3);
-  flex-shrink:0;
-  transition:color var(--t-fast),background-color var(--t-fast);
-  margin-inline-start:4px;
-}
-.prefetch-clear-btn:hover{color:var(--rose);background:rgba(224,93,93,.10);}
-.prefetch-clear-btn svg{width:60%;height:60%;}
-#prefetchPercent{
-  color:var(--gold-2);
-  font-weight:700;
-  font-variant-numeric:tabular-nums;
-}
-
 /* ═══ Buffering spinner ═══ */
 .btn-play.buffering { cursor: wait; }
 .btn-play.buffering svg {
