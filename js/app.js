@@ -297,6 +297,21 @@ const TextAPI = {
 };
 
 let _silentSwitch = false, _silentSwitchTimer = null, _audioLoadId = 0;
+let _bufferingTimeoutId = null;
+function scheduleBufferingTimeout() {
+  if (_bufferingTimeoutId) clearTimeout(_bufferingTimeoutId);
+  _bufferingTimeoutId = setTimeout(() => {
+    _bufferingTimeoutId = null;
+    if (!state._buffering || !state._playIntent) return;
+    if (navigator.onLine) return;
+    state._buffering = false;
+    UI.nowPlaying();
+    toast("📴 هذا الجزء غير متاح حالياً — سيتم التشغيل تلقائياً عند العودة", "info");
+  }, 8000);
+}
+function cancelBufferingTimeout() {
+  if (_bufferingTimeoutId) { clearTimeout(_bufferingTimeoutId); _bufferingTimeoutId = null; }
+}
 
 function markSilentSwitch() { _silentSwitch = true; if (_silentSwitchTimer) clearTimeout(_silentSwitchTimer); _silentSwitchTimer = setTimeout(() => { _silentSwitch = false; _silentSwitchTimer = null; }, CONFIG.silentSwitchMs); }
 function clearSilentSwitch() { if (_silentSwitchTimer) clearTimeout(_silentSwitchTimer); _silentSwitchTimer = null; _silentSwitch = false; }
@@ -1846,6 +1861,7 @@ els.audio.addEventListener("play", () => {
 els.audio.addEventListener("playing", () => {
   /* ⭐ v3.0.4: امسح النية — تم النجاح */
   state._resumeIntent = null;
+  cancelBufferingTimeout();
   if (state._buffering) { state._buffering = false; }
   if (!state.playing) { state.playing = true; }
   UI.nowPlaying();
@@ -1853,9 +1869,11 @@ els.audio.addEventListener("playing", () => {
 });
 els.audio.addEventListener("waiting", () => {
   if (!state._buffering && state._playIntent) { state._buffering = true; UI.nowPlaying(); }
+  scheduleBufferingTimeout();
 });
 els.audio.addEventListener("stalled", () => {
   if (!state._buffering && state._playIntent) { state._buffering = true; UI.nowPlaying(); }
+  scheduleBufferingTimeout();
 });
 els.audio.addEventListener("canplay", () => {
   if (state._buffering && !state.playing) { /* لسه بنستنى playing */ }
@@ -1863,6 +1881,7 @@ els.audio.addEventListener("canplay", () => {
 els.audio.addEventListener("pause", () => {
   state.playing = false;
   stopRafLoop();
+  cancelBufferingTimeout();
   UI.updatePlayingCard(); UI.updateQueuePlayButtons(); stopRangeWatch();
 
   /* ⭐ v3.0.4: لا نلمس time ولا buffering لو في نية معلقة */
