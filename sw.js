@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v4.1.2';
+const CACHE_VERSION = 'v4.1.3';
 const CACHE_NAME = `quran-cache-${CACHE_VERSION}`;
 
 const APP_SHELL = [

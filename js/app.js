@@ -1634,31 +1634,10 @@ const StoragePanel = {
   open() { StoragePanel.render(); openModal(els.storageOverlay); StoragePanel.refreshEstimate(); },
   close() { closeModal(els.storageOverlay); },
   async refreshEstimate() { if (!navigator.storage || !navigator.storage.estimate) { els.storageUsed.textContent = "—"; els.storageAvail.textContent = "—"; return; } try { const est = await navigator.storage.estimate(); const u = est.usage || 0, q = est.quota || 0; const pct = q > 0 ? Math.min(100, (u / q) * 100) : 0; els.storageBarFill.style.width = pct.toFixed(1) + "%"; els.storageUsed.textContent = fmtBytes(u); els.storageAvail.textContent = fmtBytes(Math.max(0, q - u)); } catch(_) { els.storageUsed.textContent = "—"; } },
-   render() {
+    render() {
     const tot = state.downloads.reduce((a, d) => a + (d.size || 0), 0);
     const recs = new Set(state.downloads.map(d => d.reciterId));
     els.storageCount.textContent = state.downloads.length; els.storageReciters.textContent = recs.size; els.storageTotal.textContent = fmtBytes(tot);
-
-    // ⭐ v34: عرض بيانات القرآن الكريم (توقيتات + نصوص) اللي نزلت أوتوماتيك
-    let staticTimings = 0, staticTexts = 0;
-    try {
-      for (const rid of Object.keys(TimingsAPI.cache)) staticTimings += Object.keys(TimingsAPI.cache[rid]).length;
-      staticTexts = TextAPI.cache.size;
-    } catch(_) {}
-    const staticInfo = document.getElementById('staticDataInfo');
-    if (staticInfo) {
-      staticInfo.innerHTML = `
-        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem">
-          <svg viewBox="0 0 24 24" style="width:1.1rem;height:1.1rem;color:var(--gold)"><path d="M12 2l1.9 5.8H20l-4.9 3.6 1.9 5.9L12 13.7l-5 3.6 1.9-5.9L4 7.8h6.1L12 2z"/></svg>
-          <b style="font-size:.85rem">بيانات القرآن الكريم (تلقائية)</b>
-        </div>
-        <div class="storage-stats">
-          <div class="storage-stat"><b>${staticTimings}</b><span>توقيتات قارئ</span></div>
-          <div class="storage-stat"><b>${staticTexts}</b><span>نص سورة</span></div>
-          <div class="storage-stat"><b>${CONFIG.reciters.length}</b><span>قراء</span></div>
-        </div>
-      `;
-    }
 
     if (!state.downloads.length) { els.storageList.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24">${ICONS.folder}</svg><p>لم تحمّل أي سورة بعد</p></div>`; return; }
     const byR = new Map();
